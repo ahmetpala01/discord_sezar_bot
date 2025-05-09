@@ -102,7 +102,7 @@ class Answer(commands.Cog):
             
         # Create a nice embed for the answer
         embed = discord.Embed(
-            description=f"{response}",
+            description=f"{question} \n Bu soruya cevabım : {response}",
             color=discord.Color.purple()
         )        
         await ctx.reply(embed=embed)
