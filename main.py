@@ -20,6 +20,7 @@ async def on_ready():
 async def load_cogs():
     await bot.load_extension("cogs.steam")
     await bot.load_extension("cogs.speedtest")
+    await bot.load_extension("cogs.answers")
 
 # Botu başlatmadan önce cogs'ları yükle
 async def main():
