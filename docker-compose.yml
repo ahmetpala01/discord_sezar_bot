@@ -1,0 +1,12 @@
+version: '3'
+
+services:
+  discord-bot:
+    build: .
+    container_name: sezar-discord-bot
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    environment:
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - STEAM_API_KEY=${STEAM_API_KEY}
