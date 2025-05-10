@@ -9,39 +9,38 @@ class Answer(commands.Cog):
         self.bot = bot
         self.responses = [
             "Kesinlikle katılıyorum!",
-            "Hayır katılmıyorum!",
-            "Belki de öyledir",
-            "Bilmiyorum, ama denemeye değer",
-            "Bunu düşünmek zorundayım",
-            "Bunu yapmayı çok isterim",
-            "Bunu yapmayı hiç istemiyorum",
-            "Hayır öyle düşünmüyorum",
-            "Evet kesinlikle yapmalısın!",
+            "Bence haklı değilsiniz.",
+            "Belki de öyledir.",
+            "Bilmiyorum, ama denemeye değer olabilir.",
+            "Bu konuyu düşünmem gerekiyor.",
+            "Bunu yapmayı düşünebilirsiniz.",
+            "Bunu yapmak istemeyebilirsiniz.",
+            "Öyle düşünmüyorum.",
+            "Evet, bence denemelisiniz!",
         ]
         
         # Greetings and casual chat responses
         self.greetings = {
-            r"merhaba|selam|hey|hi|hello|sa|sea|selamın aleyküm": [
-                "Aleyküm selam gardaş",
-                "Selam dostum! Nasılsın?",
-                "Hg reis as",
-                "Kölelikte bugun nasıl gidiyor?",
+            r"merhaba|selam|hey|hi|hello|sa|sea|selamün aleyküm|selamun aleykum": [
+                "Aleykümselam!",
+                "Merhaba! Nasılsınız?",
+                "Hoş geldiniz!",
                 "Merhaba! Nasıl yardımcı olabilirim?",
-                "Selam! Bugün sana nasıl yardım edebilirim?",
-                "Hey! Ne yapıyorsun?",
+                "Selamlar! Bugün size nasıl yardım edebilirim?",
+                "Merhaba! Ne yapıyorsunuz?",
             ],
             r"nasılsın|naber|ne haber": [
-                "İyi aga seni sormalı?",
-                "İyiyim, teşekkürler! Sen nasılsın?",
-                "Harika! Sen nasılsın?",
-                "Bir bot olarak her zamanki gibiyim. Sen nasılsın?",
-                "Botlar yorulmazlar her zaman iyiyiz gardeş ;)",
+                "İyiyim, teşekkür ederim, sizi sormalı?",
+                "İyiyim, teşekkürler! Siz nasılsınız?",
+                "Gayet iyiyim! Siz nasılsınız?",
+                "Bir bot olarak her zamanki gibiyim. Siz nasılsınız?",
+                "Hizmetinizdeyim, her şey yolunda!",
             ],
-            r"teşekkür|teşekkürler|sağol|eyw|eyw reis|eyv|eyv reis": [
-                "Ne demek bro!",
+            r"teşekkür|teşekkürler|sağol": [
                 "Rica ederim!",
                 "Ne demek, her zaman!",
                 "Yardımcı olabildiysem ne mutlu bana!",
+                "Bir şey değil, başka bir konuda yardıma ihtiyacınız olursa buradayım.",
             ]
         }
         
@@ -53,77 +52,59 @@ class Answer(commands.Cog):
                 "Zamanın her şeyi göstereceğine inanıyorum.",
             ],
             "decision": [
-                "Bu senin kararın olmalı, ama bence denemelisin.",
-                "Bunu yapmak istediğine gerçekten emin misin?",
-                "Eğer gerçekten istiyorsan yapmalısın!",
+                "Bu sizin kararınız olmalı, ama denemeyi düşünebilirsiniz.",
+                "Bunu yapmak istediğinize gerçekten emin misiniz?",
+                "Eğer gerçekten istiyorsanız yapmalısınız!",
                 "Bazen beklemek en iyisidir.",
             ],
             "prediction": [
-                "Geleceği görebilseydim sana söylerdim!",
+                "Geleceği görebilseydim size söylerdim!",
                 "Büyük ihtimalle evet!",
-                "Sanırım bu olmayacak.",
-                "Gökyüzündeki yıldızlar buna olumlu bakıyor!",
+                "Sanırım bu gerçekleşmeyecek.",
+                "Olasılıklar olumlu görünüyor!",
             ],
-            "djkavun":[
-                "Kavun mu, offf sulu suluuu",
-                "Kavun yarmayı çok severim",
-                "Ortadan ayırmak için buradayım",
-                "Kavun yarmak için buradayım",
-                "Dur bıçağı alayım da kavunu yarayım",
-                "Kavun yarma işini ben üstlenirim",
-                "Sen olmazsan kavunu kim yaracak?",
-                "Kavunu bir tek sen yarabilirsin",
-                "Kavun mu yarıyoruz, offf sulu sulu en sevdiğim"
-            ],
-            "salemanageribo":[
-                "Satış elemanı ibo burada mıymış ?",
-                "İbo gelmiş, satış elemanı ibo burada",
-                "Vaayy furkan yok galiba ibo bey gelmiş",
-                "Dilci furkan yoksa satış elemanı buradadır",
-                "İbo bey gelmiş, furkan yok mu?",
+            "identity": [
+                "Ben Discord Sezar Bot'um! Size yardımcı olmak için buradayım.",
+                "Ben bir Discord yardım botuyum. Size nasıl yardımcı olabilirim?",
+                "Ben Discord üzerinde çalışan bir sohbet ve yardım botuyum.",
+                "Adım Sezar Bot! Sorularınızı cevaplamak ve yardımcı olmak için buradayım.",
             ]
         }
 
     @commands.hybrid_command(name="sorusor", description="Bir cevap istiyorsan alırsın")
     async def ask_question(self, ctx, *, question: str):
         # Categorize the question if possible
-        if any(word in question.lower() for word in ["ne zaman", "zaman", "süre", "saat"]):
+        if any(word in question.lower() for word in ["kimsin", "sen kimsin", "kendini tanıt", "bot musun", "nesin sen"]):
+            response = random.choice(self.categorized_answers["identity"])
+        elif any(word in question.lower() for word in ["ne zaman", "zaman", "süre", "saat"]):
             response = random.choice(self.categorized_answers["time"])
         elif any(word in question.lower() for word in ["yapmalı mıyım", "etmeli miyim", "karar", "seçmeli miyim"]):
             response = random.choice(self.categorized_answers["decision"])
         elif any(word in question.lower() for word in ["olacak mı", "gerçekleşecek mi", "başarılı olacak mıyım"]):
             response = random.choice(self.categorized_answers["prediction"])
-        elif any(word in question.lower() for word in ["kavun", "kavun yar", "kavun yarma","kavunu kim yarar","sulu sulu kavun"]):
-            response = random.choice(self.categorized_answers["djkavun"])
-        elif any(word in question.lower() for word in ["ibo", "ibo bey", "ibo gelmiş", "ibo nerede","ibo nerede lan"]):
-            response = random.choice(self.categorized_answers["salemanageribo"])
         else:
             response = random.choice(self.responses)
             
         # Create a nice embed for the answer
         embed = discord.Embed(
-            description=f"{question} \n Bu soruya cevabım : {response}",
+            description=f"{question} \n Bu soruya cevabım: {response}",
             color=discord.Color.purple()
         )        
         await ctx.reply(embed=embed)
         
     @commands.hybrid_command(name="sohbet", description="Benimle sohbet et")
     async def chat(self, ctx, *, message: str):
-        response = "Anlamadım, daha açık konuşabilir misin?"
+        response = "Anlamadım, daha açık konuşabilir misiniz?"
         
-        # Check for patterns in greetings
-        for pattern, replies in self.greetings.items():
-            if re.search(pattern, message.lower()):
-                response = random.choice(replies)
-                break
-                
-         # Check for kavun related messages
-        if any(word in message.lower() for word in ["kavun", "kavun yar", "kavun yarma", "kavunu kim yarar", "sulu sulu kavun"]):
-            response = random.choice(self.categorized_answers["djkavun"])
-        
-        # Check for ibo related messages
-        elif any(word in message.lower() for word in ["ibo", "ibo bey", "ibo gelmiş", "ibo nerede", "ibo nerede lan"]):
-            response = random.choice(self.categorized_answers["salemanageribo"])
+        # Check for identity questions
+        if any(word in message.lower() for word in ["kimsin", "sen kimsin", "kendini tanıt", "bot musun", "nesin sen"]):
+            response = random.choice(self.categorized_answers["identity"])
+        else:
+            # Check for patterns in greetings
+            for pattern, replies in self.greetings.items():
+                if re.search(pattern, message.lower()):
+                    response = random.choice(replies)
+                    break
                 
         await ctx.reply(response)
         
@@ -137,16 +118,15 @@ class Answer(commands.Cog):
         if self.bot.user.mentioned_in(message):
             content = message.content.lower().replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
             
+            # Check for identity questions
+            if any(word in content for word in ["kimsin", "sen kimsin", "kendini tanıt", "bot musun", "nesin sen"]):
+                await message.reply(random.choice(self.categorized_answers["identity"]))
+                return
+            
             # Check if it's a question
             if content.endswith("?"):
-                # Check for kavun related questions
-                if any(word in content for word in ["kavun", "kavun yar", "kavun yarma", "kavunu kim yarar", "sulu sulu kavun"]):
-                    response = random.choice(self.categorized_answers["djkavun"])
-                # Check for ibo related questions
-                elif any(word in content for word in ["ibo", "ibo bey", "ibo gelmiş", "ibo nerede", "ibo nerede lan"]):
-                    response = random.choice(self.categorized_answers["salemanageribo"])
                 # Check for time related questions
-                elif any(word in content for word in ["ne zaman", "zaman", "süre", "saat"]):
+                if any(word in content for word in ["ne zaman", "zaman", "süre", "saat"]):
                     response = random.choice(self.categorized_answers["time"])
                 # Check for decision related questions
                 elif any(word in content for word in ["yapmalı mıyım", "etmeli miyim", "karar", "seçmeli miyim"]):
@@ -159,16 +139,6 @@ class Answer(commands.Cog):
                     response = random.choice(self.responses)
                 await message.reply(response)
                 return
-            
-            # Check for kavun related messages (without question mark)
-            if any(word in content for word in ["kavun", "kavun yar", "kavun yarma", "kavunu kim yarar", "sulu sulu kavun"]):
-                await message.reply(random.choice(self.categorized_answers["djkavun"]))
-                return
-                
-            # Check for ibo related messages (without question mark)
-            if any(word in content for word in ["ibo", "ibo bey", "ibo gelmiş", "ibo nerede", "ibo nerede lan"]):
-                await message.reply(random.choice(self.categorized_answers["salemanageribo"]))
-                return
                 
             # Check for greetings or other patterns
             for pattern, replies in self.greetings.items():
@@ -177,6 +147,7 @@ class Answer(commands.Cog):
                     return
                     
             # Default response when bot is mentioned but no pattern matched
-            await message.reply("Merhaba! Bir şey mi sormak istiyorsun? `/sorusor` komutunu kullanabilirsin.")
+            await message.reply("Merhaba! Bir şey mi sormak istiyorsunuz? `/sorusor` komutunu kullanabilirsiniz.")
+
 async def setup(bot):
     await bot.add_cog(Answer(bot))
