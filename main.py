@@ -21,6 +21,8 @@ async def load_cogs():
     await bot.load_extension("cogs.steam")
     await bot.load_extension("cogs.speedtest")
     await bot.load_extension("cogs.answers")
+    await bot.load_extension("cogs.youtube_music") 
+
 
 # Botu başlatmadan önce cogs'ları yükle
 async def main():

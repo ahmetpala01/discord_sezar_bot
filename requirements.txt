@@ -2,3 +2,5 @@ discord.py>=2.0.0
 python-dotenv
 speedtest-cli
 requests
+yt-dlp
+PyNaCl  # For voice support
