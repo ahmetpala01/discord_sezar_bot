@@ -21,7 +21,7 @@ WORKDIR /app
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && \
-    rm -rf ~/.cache/pip
+    rm -rf ~/.cache/pip /root/.cache
 
 # Copy application code
 COPY . .
