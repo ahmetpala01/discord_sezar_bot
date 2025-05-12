@@ -6,6 +6,7 @@ import os
 import asyncio
 import datetime
 from dotenv import load_dotenv
+from database import init_db
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -56,13 +57,6 @@ async def load_cogs():
         print("✅ Steam modülü yüklendi")
     except Exception as e:
         print(f"❌ Steam modülü yüklenemedi: {e}")
-        
-    try:
-        await bot.load_extension("cogs.speedtest")
-        print("✅ Speedtest modülü yüklendi")
-    except Exception as e:
-        print(f"❌ Speedtest modülü yüklenemedi: {e}")
-        
     try:
         await bot.load_extension("cogs.answers")
         print("✅ Answers modülü yüklendi")
@@ -86,6 +80,16 @@ async def load_cogs():
         print("✅ Welcome modülü yüklendi")
     except Exception as e:
         print(f"❌ Welcome modülü yüklenemedi: {e}")
+    try:
+        await bot.load_extension("cogs.statistics")
+        print("✅ Statistics modülü yüklendi")
+    except Exception as e:
+        print(f"❌ Statistics modülü yüklenemedi: {e}")
+    try:
+        await bot.load_extension("cogs.moderation")
+        print("✅ Moderation modülü yüklendi")
+    except Exception as e:
+        print(f"❌ Moderation modülü yüklenemedi: {e}")
 
 async def change_status():
     # Bot bağlanana kadar bekle
@@ -129,6 +133,7 @@ async def update_stats():
 # Botu başlatmadan önce cogs'ları yükle
 async def main():
     async with bot:
+        init_db()
         await load_cogs()
         # Not: Task'ları on_ready event'inde başlatıyoruz
         await bot.start(TOKEN)

@@ -35,4 +35,4 @@ Sezar Bot, durumunu düzenli olarak değiştirerek farklı özelliklerini vurgul
 
 ## Davet Et
 
-[Buraya tıklayarak](https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=3419134&scope=bot%20applications.commands) Sezar Bot'u sunucunuza ekleyin!
+[Buraya tıklayarak](https://discord.com/oauth2/authorize?client_id=1369772830937317437) Sezar Bot'u sunucunuza ekleyin!
