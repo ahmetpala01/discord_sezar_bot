@@ -1,4 +1,4 @@
-version: '3'
+version: '3.8'
 
 services:
   discord-bot:
@@ -6,7 +6,34 @@ services:
     container_name: sezar-discord-bot
     restart: unless-stopped
     volumes:
-      - .:/app
+      - ./:/app
+      - bot-data:/app/data
+      - pip-cache:/root/.cache/pip
     environment:
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
       - STEAM_API_KEY=${STEAM_API_KEY}
+      - TZ=Europe/Istanbul
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('https://discord.com/api/v10/gateway')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          memory: 256M
+
+volumes:
+  bot-data:
+    driver: local
+  pip-cache:
+    driver: local
