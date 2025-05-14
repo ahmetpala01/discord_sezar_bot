@@ -48,58 +48,109 @@ async def on_ready():
     bot.loop.create_task(change_status())
     bot.loop.create_task(update_stats())
     
-    synced = await bot.tree.sync()
-    print(f"✅ Slash komutları senkronize edildi: {len(synced)} komut")
+    # Force sync all application commands
+    await sync_all_commands()
+
+async def sync_all_commands():
+    """Synchronize all commands across all guilds"""
+    try:
+        print("Slash komutları senkronize ediliyor...")
+        
+        # First, sync global commands
+        synced_global = await bot.tree.sync()
+        print(f"✅ Global slash komutları senkronize edildi: {len(synced_global)} komut")
+        
+        # Then sync to each guild specifically (sometimes helps with registration issues)
+        for guild in bot.guilds:
+            try:
+                # Copy commands to guild command tree and sync
+                await bot.tree.sync(guild=guild)
+                print(f"✓ {guild.name} sunucusuna komutlar senkronize edildi")
+            except Exception as e:
+                print(f"✗ {guild.name} sunucusuna komut senkronizasyonu başarısız: {e}")
+        
+        # Print command details for debugging
+        commands = []
+        for cmd in bot.tree.get_commands():
+            commands.append(f"/{cmd.name}")
+        
+        if commands:
+            print(f"Komut listesi: {', '.join(commands)}")
+        else:
+            print("⚠️ Hiç komut bulunamadı! Bu bir sorun olabilir.")
+        
+        return synced_global
+    except Exception as e:
+        print(f"❌ Komut senkronizasyonu hatası: {e}")
+        return []
+
+@bot.command(name="sync")
+@commands.is_owner()  # Only bot owner can use this command
+async def sync_command(ctx):
+    """Manually sync slash commands with Discord"""
+    try:
+        await ctx.send("Syncing slash commands...")
+        synced = await bot.tree.sync()
+        await ctx.send(f"✅ Synced {len(synced)} slash commands to Discord!")
+    except Exception as e:
+        await ctx.send(f"❌ Error syncing commands: {e}")
 
 async def load_cogs():
-    try:
-        await bot.load_extension("cogs.steam")
-        print("✅ Steam modülü yüklendi")
-    except Exception as e:
-        print(f"❌ Steam modülü yüklenemedi: {e}")
-    try:
-        await bot.load_extension("cogs.answers")
-        print("✅ Answers modülü yüklendi")
-    except Exception as e:
-        print(f"❌ Answers modülü yüklenemedi: {e}")
-        
-    try:
-        await bot.load_extension("cogs.youtube_music")
-        print("✅ Youtube Music modülü yüklendi")
-    except Exception as e:
-        print(f"❌ Youtube Music modülü yüklenemedi: {e}")
-        
-    try:
-        await bot.load_extension("cogs.help")
-        print("✅ Help modülü yüklendi")
-    except Exception as e:
-        print(f"❌ Help modülü yüklenemedi: {e}")
-        
-    try:
-        await bot.load_extension("cogs.welcome")
-        print("✅ Welcome modülü yüklendi")
-    except Exception as e:
-        print(f"❌ Welcome modülü yüklenemedi: {e}")
-    try:
-        await bot.load_extension("cogs.statistics")
-        print("✅ Statistics modülü yüklendi")
-    except Exception as e:
-        print(f"❌ Statistics modülü yüklenemedi: {e}")
-    try:
-        await bot.load_extension("cogs.moderation")
-        print("✅ Moderation modülü yüklendi")
-    except Exception as e:
-        print(f"❌ Moderation modülü yüklenemedi: {e}")
-    try:
-        await bot.load_extension("cogs.wordgame")
-        print("✅ Wordgame modülü yüklendi")
-    except Exception as e:
-        print(f"❌ Wordgame modülü yüklenemedi: {e}")
-    try:
-        await bot.load_extension("cogs.check_afk")
-        print("✅ CheckAFK modülü yüklendi")
-    except Exception as e:
-        print(f"❌ CheckAFK modülü yüklenemedi: {e}")
+    """Load all cogs and ensure commands are registered"""
+    # Dictionary to track loaded extensions and their command counts
+    cog_stats = {}
+    
+    # List of all cogs to load
+    cogs_to_load = [
+        "cogs.steam", 
+        "cogs.answers",
+        "cogs.youtube_music", 
+        "cogs.help",
+        "cogs.welcome", 
+        "cogs.statistics",
+        "cogs.moderation", 
+        "cogs.wordgame",
+        "cogs.check_afk",
+        "cogs.speedtest"  # Make sure this is included if it exists
+    ]
+    
+    # Track command count before loading
+    cmd_count_before = len(bot.tree.get_commands())
+    
+    # Load each cog
+    for cog in cogs_to_load:
+        try:
+            # Store command count before loading this cog
+            before_count = len(bot.tree.get_commands())
+            
+            # Load the cog
+            await bot.load_extension(cog)
+            
+            # Calculate how many commands were added by this cog
+            after_count = len(bot.tree.get_commands())
+            cmd_added = after_count - before_count
+            
+            # Track stats
+            cog_name = cog.split(".")[-1].capitalize()
+            cog_stats[cog] = cmd_added
+            
+            print(f"✅ {cog_name} modülü yüklendi (+{cmd_added} komut)")
+        except Exception as e:
+            print(f"❌ {cog.split('.')[-1].capitalize()} modülü yüklenemedi: {e}")
+    
+    # Calculate total commands added
+    cmd_count_after = len(bot.tree.get_commands())
+    total_added = cmd_count_after - cmd_count_before
+    
+    print(f"📊 Toplam {total_added} komut yüklendi")
+    
+    # Debug information - List all commands by cog
+    if cog_stats:
+        print("\n🔍 Cog bazında komut dağılımı:")
+        for cog, count in cog_stats.items():
+            print(f"  • {cog.split('.')[-1].capitalize()}: {count} komut")
+    
+    return cog_stats
 
 async def change_status():
     # Bot bağlanana kadar bekle
