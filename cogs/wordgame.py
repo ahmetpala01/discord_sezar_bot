@@ -139,10 +139,4 @@ class WordGame(commands.Cog):
             print(f"❌ Kelime kontrolü yapılırken hata: {str(e)}")
 
 async def setup(bot):
-    try:
-        await bot.add_cog(WordGame(bot))
-        logger.info("WordGame cog loaded successfully")
-        print("✅ Wordgame modülü yüklendi")
-    except Exception as e:
-        logger.error(f"Failed to load WordGame cog: {str(e)}\n{traceback.format_exc()}")
-        print(f"❌ Wordgame modülü yüklenemedi: {str(e)}")
+    await bot.add_cog(WordGame(bot))

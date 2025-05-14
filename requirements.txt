@@ -4,3 +4,4 @@ speedtest-cli
 requests
 yt-dlp
 PyNaCl  # For voice support
+ffmpeg-python
