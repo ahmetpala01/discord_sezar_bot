@@ -8,9 +8,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     TZ=Europe/Istanbul
 
-# Set timezone and install dependencies in a single layer to save space
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
-    apt-get update && \
+# Install FFmpeg and dependencies in a single layer to save space
+RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg git && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
@@ -26,5 +25,11 @@ RUN pip install --no-cache-dir -r requirements.txt && \
 # Copy application code
 COPY . .
 
-# Command to run the application
-CMD ["python", "main.py"]
+# Make startup script executable
+RUN chmod +x start.py
+
+# Set environment variable to explicitly tell the bot where ffmpeg is
+ENV FFMPEG_PATH=/usr/bin/ffmpeg
+
+# Use our startup script instead of directly running main.py
+CMD ["python", "start.py"]
