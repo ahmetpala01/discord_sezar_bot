@@ -52,38 +52,16 @@ async def on_ready():
     await sync_all_commands()
 
 async def sync_all_commands():
-    """Synchronize all commands across all guilds"""
     try:
         print("Slash komutları senkronize ediliyor...")
-        
-        # First, sync global commands
-        synced_global = await bot.tree.sync()
-        print(f"✅ Global slash komutları senkronize edildi: {len(synced_global)} komut")
-        
-        # Then sync to each guild specifically (sometimes helps with registration issues)
-        for guild in bot.guilds:
-            try:
-                # Copy commands to guild command tree and sync
-                await bot.tree.sync(guild=guild)
-                print(f"✓ {guild.name} sunucusuna komutlar senkronize edildi")
-            except Exception as e:
-                print(f"✗ {guild.name} sunucusuna komut senkronizasyonu başarısız: {e}")
-        
-        # Print command details for debugging
-        commands = []
-        for cmd in bot.tree.get_commands():
-            commands.append(f"/{cmd.name}")
-        
-        if commands:
-            print(f"Komut listesi: {', '.join(commands)}")
-        else:
-            print("⚠️ Hiç komut bulunamadı! Bu bir sorun olabilir.")
-        
-        return synced_global
+        synced = await bot.tree.sync()
+        print(f"✅ Global slash komutları senkronize edildi: {len(synced)} komut")
+        return synced
     except Exception as e:
         print(f"❌ Komut senkronizasyonu hatası: {e}")
         return []
-
+    
+    
 @bot.command(name="sync")
 @commands.is_owner()  # Only bot owner can use this command
 async def sync_command(ctx):

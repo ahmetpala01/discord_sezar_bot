@@ -18,52 +18,80 @@ import wave
 import numpy as np
 from discord import PCMVolumeTransformer
 from discord.opus import Encoder as OpusEncoder
+from urllib.parse import urlparse
+import aiohttp
+from aiohttp.client_exceptions import ClientConnectorError
 
 # Configure logger for this module
 logger = logging.getLogger('sezar.music')
 
+# Set up more detailed logging for debugging on the server
+logger.setLevel(logging.DEBUG)
+if not logger.handlers:
+    file_handler = logging.FileHandler('music.log')
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
+
 class FFmpegPCMAudio(discord.AudioSource):
-    """Audio source for ffmpeg-python library"""
+    """Audio source for FFmpeg with enhanced error handling for server environments"""
     def __init__(self, source, *, executable=None, pipe=False, stderr=None, before_options=None, options=None):
         self.source = source
-        self.executable = executable or 'ffmpeg'
         self.pipe = pipe
         self.stderr = stderr
         self.before_options = before_options or ''
         self.options = options or ''
         self.process = None
         self.stdout = None
-        self.block_size = OpusEncoder.FRAME_SIZE * 4  # 4 bytes per sample for 16-bit stereo
+        self.block_size = 3840  # opus frame size * 2 channels * 2 bytes per sample
         
-        # Try to find ffmpeg binary
-        self._locate_ffmpeg()
-
-    def _locate_ffmpeg(self):
-        """Locate ffmpeg binary on the system"""
-        try:
-            # First check if it's in the system path
-            if shutil.which('ffmpeg'):
-                self.executable = 'ffmpeg'
-                return True
-                
-            # Check common Windows locations
-            if platform.system() == 'Windows':
-                possible_paths = [
-                    r'C:\ffmpeg\bin\ffmpeg.exe',
-                    r'C:\Program Files\ffmpeg\bin\ffmpeg.exe',
-                    r'C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe',
-                ]
-                
-                for path in possible_paths:
-                    if os.path.isfile(path):
-                        self.executable = path
-                        return True
+        # FFmpeg executable finding with better error handling
+        if executable:
+            self.executable = executable
+        else:
+            self.executable = self._find_ffmpeg()
             
-            # Fall back to PATH
-            return False
-        except Exception as e:
-            logger.error(f"Error locating ffmpeg: {str(e)}")
-            return False
+        logger.debug(f"FFmpegPCMAudio initialized with executable: {self.executable}")
+        logger.debug(f"Source: {source}")
+        logger.debug(f"Before options: {before_options}")
+        logger.debug(f"Options: {options}")
+
+    def _find_ffmpeg(self):
+        """Find FFmpeg executable with comprehensive search"""
+        # Check environment variable first (for Docker/container setups)
+        ffmpeg_path = os.environ.get('FFMPEG_PATH')
+        if ffmpeg_path and os.path.isfile(ffmpeg_path):
+            logger.info(f"Using FFmpeg from environment variable: {ffmpeg_path}")
+            return ffmpeg_path
+            
+        # Check if ffmpeg is in system PATH
+        ffmpeg_in_path = shutil.which('ffmpeg')
+        if ffmpeg_in_path:
+            logger.info(f"Found FFmpeg in system PATH: {ffmpeg_in_path}")
+            return ffmpeg_in_path
+            
+        # Check common locations based on OS
+        if platform.system() == 'Windows':
+            common_paths = [
+                r'C:\ffmpeg\bin\ffmpeg.exe',
+                r'C:\Program Files\ffmpeg\bin\ffmpeg.exe',
+                r'C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe',
+            ]
+        else:  # Linux/Mac
+            common_paths = [
+                '/usr/bin/ffmpeg',
+                '/usr/local/bin/ffmpeg',
+                '/opt/ffmpeg/bin/ffmpeg',
+                '/app/ffmpeg'  # Common Docker location
+            ]
+            
+        for path in common_paths:
+            if os.path.isfile(path):
+                logger.info(f"Found FFmpeg at: {path}")
+                return path
+                
+        # Last resort - try using just 'ffmpeg' and hope it works
+        logger.warning("FFmpeg not found in any expected location, falling back to 'ffmpeg'")
+        return 'ffmpeg'
 
     def _create_process(self):
         try:
@@ -94,27 +122,57 @@ class FFmpegPCMAudio(discord.AudioSource):
             
             logger.debug(f"FFmpeg command: {' '.join(args)}")
             
-            # Create the process
-            self.process = subprocess.Popen(
-                args,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE if not self.pipe else subprocess.STDOUT
-            )
-            
-            self.stdout = self.process.stdout
-            
-        except FileNotFoundError:
-            logger.error(f"FFmpeg executable not found: {self.executable}")
-            raise
+            # Create the process with more robust error handling
+            try:
+                self.process = subprocess.Popen(
+                    args,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE if not self.pipe else subprocess.STDOUT,
+                    bufsize=self.block_size  # Buffering helps with smoother playback
+                )
+                
+                if self.process.poll() is not None:
+                    # Process ended immediately - probably an error
+                    raise Exception(f"FFmpeg process failed to start! Exit code: {self.process.returncode}")
+                
+                self.stdout = self.process.stdout
+                
+            except FileNotFoundError:
+                logger.error(f"FFmpeg executable not found: {self.executable}")
+                raise
+                
         except Exception as e:
-            logger.error(f"Error creating ffmpeg process: {str(e)}")
+            error_message = str(e)
+            stderr_output = ""
+            
+            # Try to get stderr output if available
+            if self.process and hasattr(self.process, 'stderr') and self.process.stderr:
+                try:
+                    stderr_output = self.process.stderr.read().decode('utf-8', errors='replace')
+                except:
+                    pass
+                
+            if stderr_output:
+                logger.error(f"FFmpeg error: {error_message}\nFFmpeg stderr: {stderr_output}")
+            else:
+                logger.error(f"Error creating FFmpeg process: {error_message}")
+                
+            # Clean up if needed
             if self.process:
-                self.process.kill()
-            raise e
+                try:
+                    self.process.kill()
+                except:
+                    pass
+                    
+            raise
 
     def read(self):
         if self.process is None:
-            self._create_process()
+            try:
+                self._create_process()
+            except Exception as e:
+                logger.error(f"Failed to create FFmpeg process: {e}")
+                return b''  # Return empty to indicate end of stream
 
         try:
             # Read bytes from stdout of the ffmpeg process
@@ -127,7 +185,7 @@ class FFmpegPCMAudio(discord.AudioSource):
                 
             return data
         except Exception as e:
-            logger.error(f"Error reading from ffmpeg process: {str(e)}")
+            logger.error(f"Error reading from FFmpeg process: {str(e)}")
             self.cleanup()
             return b''
 
@@ -137,12 +195,12 @@ class FFmpegPCMAudio(discord.AudioSource):
             if self.process:
                 try:
                     self.process.kill()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Error killing process during cleanup: {e}")
                 self.process = None
                 self.stdout = None
         except Exception as e:
-            logger.error(f"Error cleaning up ffmpeg process: {str(e)}")
+            logger.error(f"Error cleaning up FFmpeg process: {str(e)}")
 
     def is_opus(self):
         return False
@@ -150,21 +208,72 @@ class FFmpegPCMAudio(discord.AudioSource):
 class YoutubeMusic(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.thread_pool = ThreadPoolExecutor(max_workers=2)
+        self.thread_pool = ThreadPoolExecutor(max_workers=3)  # Increased for better performance
         self.currently_playing = {}  # Guild ID -> song info
         self.temp_dir = tempfile.mkdtemp(prefix="sezar_music_")
+        self.http_session = None  # Will be initialized in cog_load
         
-        # Server-optimized formats to reduce bandwidth and CPU usage
+        # Use environment variable for FFmpeg if available
+        self.ffmpeg_path = os.environ.get('FFMPEG_PATH')
+        
+        # If not set in environment, try to find it
+        if not self.ffmpeg_path or not os.path.isfile(self.ffmpeg_path):
+            self.ffmpeg_path = self._find_ffmpeg()
+        
+        # Format selection - optimize for server performance
         self.optimized_format = 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio'
         
         logger.info(f"YoutubeMusic cog initialized")
         logger.info(f"Temp directory created at: {self.temp_dir}")
-        logger.info(f"Using ffmpeg-python library for audio processing")
+        logger.info(f"FFmpeg path: {self.ffmpeg_path}")
     
-    def cog_unload(self):
+    def _find_ffmpeg(self):
+        """Find FFmpeg executable with comprehensive search"""
+        # Use the same FFmpeg finding logic as in FFmpegPCMAudio
+        ffmpeg_path = shutil.which('ffmpeg')
+        if ffmpeg_path:
+            return ffmpeg_path
+            
+        # Check common locations based on OS
+        if platform.system() == 'Windows':
+            common_paths = [
+                r'C:\ffmpeg\bin\ffmpeg.exe',
+                r'C:\Program Files\ffmpeg\bin\ffmpeg.exe',
+                r'C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe',
+            ]
+        else:  # Linux/Mac
+            common_paths = [
+                '/usr/bin/ffmpeg',
+                '/usr/local/bin/ffmpeg',
+                '/opt/ffmpeg/bin/ffmpeg',
+                '/app/ffmpeg'  # Common Docker location
+            ]
+            
+        for path in common_paths:
+            if os.path.isfile(path):
+                return path
+                
+        return 'ffmpeg'  # Default fallback
+    
+    async def cog_load(self):
+        """Setup resources when cog is loaded"""
+        # Create HTTP session for URL checks
+        self.http_session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=10),
+            connector=aiohttp.TCPConnector(ssl=False)  # Disable SSL for better compatibility
+        )
+    
+    async def cog_unload(self):
         """Clean up resources when cog is unloaded"""
         try:
+            # Close HTTP session if it exists
+            if self.http_session:
+                await self.http_session.close()
+                
+            # Shutdown thread pool
             self.thread_pool.shutdown(wait=False)
+            
+            # Remove temp directory
             if os.path.exists(self.temp_dir):
                 shutil.rmtree(self.temp_dir, ignore_errors=True)
                 logger.info(f"Removed temporary directory: {self.temp_dir}")
@@ -180,9 +289,18 @@ class YoutubeMusic(commands.Cog):
                     await ctx.voice_client.move_to(channel)
                     logger.info(f"Bot moved to voice channel: {channel.name}")
                     return await ctx.reply("Ses kanalına taşındım.")
-                await channel.connect()
-                logger.info(f"Bot joined voice channel: {channel.name}")
-                await ctx.reply("Ses kanalına bağlandım.")
+                    
+                # Connect with timeout and better error handling
+                try:
+                    await channel.connect(timeout=15.0, reconnect=True)
+                    logger.info(f"Bot joined voice channel: {channel.name}")
+                    await ctx.reply("Ses kanalına bağlandım.")
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout connecting to voice channel {channel.name}")
+                    await ctx.reply("⚠️ Ses kanalına bağlanırken zaman aşımı oluştu. Lütfen tekrar deneyin.")
+                except Exception as e:
+                    logger.error(f"Error connecting to voice channel: {str(e)}")
+                    await ctx.reply(f"⚠️ Ses kanalına bağlanırken bir hata oluştu: {str(e)}")
             else:
                 logger.warning(f"Join failed: User {ctx.author} not in a voice channel")
                 await ctx.reply("Lütfen önce bir ses kanalına katılın.")
@@ -200,7 +318,7 @@ class YoutubeMusic(commands.Cog):
                     del self.currently_playing[ctx.guild.id]
                 
                 channel_name = ctx.voice_client.channel.name
-                await ctx.voice_client.disconnect()
+                await ctx.voice_client.disconnect(force=True)  # Force disconnect in case of issues
                 logger.info(f"Bot left voice channel: {channel_name}")
                 await ctx.reply("Ses kanalından ayrıldım.")
             else:
@@ -223,53 +341,118 @@ class YoutubeMusic(commands.Cog):
             'no_warnings': True,
             'default_search': 'auto',
             'source_address': '0.0.0.0',
-            # WispByte server optimization - reduce memory usage
+            # Server optimization options
             'geo_bypass': True,
             'nocheckcertificate': True,
             'ignoreerrors': True,
             'logtostderr': False,
             'cachedir': self.temp_dir,
             'extractor_retries': 3,
+            'retries': 5,
+            'fragment_retries': 5,
+            'skip_download': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
         }
         
         loop = asyncio.get_event_loop()
-        try:
-            with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-                # Run in executor to avoid blocking
-                info = await loop.run_in_executor(
-                    self.thread_pool, 
-                    lambda: ydl.extract_info(url, download=False)
-                )
-                
-            if info is None:
+        
+        # Add retry mechanism
+        for attempt in range(3):
+            try:
+                with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+                    # Run in executor to avoid blocking
+                    info = await loop.run_in_executor(
+                        self.thread_pool, 
+                        lambda: ydl.extract_info(url, download=False)
+                    )
+                    
+                if info is None:
+                    logger.warning(f"No info returned from YouTube-DL for {url}")
+                    if attempt < 2:
+                        await asyncio.sleep(1)
+                        continue
+                    return None
+                    
+                # Handle playlists vs single videos
+                if 'entries' in info:
+                    if not info['entries']:
+                        logger.warning(f"Empty entries list returned from YouTube-DL for {url}")
+                        if attempt < 2:
+                            await asyncio.sleep(1)
+                            continue
+                        return None
+                    info = info['entries'][0]
+                    
+                return info
+            except youtube_dl.utils.DownloadError as e:
+                logger.error(f"YouTube-DL download error (attempt {attempt+1}/3): {str(e)}")
+                if attempt < 2:
+                    await asyncio.sleep(1.5)
+                    continue
+                return None
+            except Exception as e:
+                logger.error(f"Error getting song info (attempt {attempt+1}/3): {str(e)}")
+                if attempt < 2:
+                    await asyncio.sleep(1.5)
+                    continue
                 return None
                 
-            # Handle playlists vs single videos
-            if 'entries' in info:
-                info = info['entries'][0]
-                
-            return info
+        return None  # Return None if all attempts failed
+
+    async def _check_url_accessibility(self, url):
+        """Check if a URL is accessible"""
+        if not self.http_session:
+            self.http_session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=10),
+                connector=aiohttp.TCPConnector(ssl=False)
+            )
+            
+        try:
+            async with self.http_session.head(url, timeout=5) as response:
+                return response.status < 400
+        except (ClientConnectorError, asyncio.TimeoutError, aiohttp.ClientError) as e:
+            logger.warning(f"URL accessibility check failed for {url}: {str(e)}")
+            return False
         except Exception as e:
-            logger.error(f"Error getting song info: {str(e)}")
-            return None
+            logger.error(f"Error checking URL accessibility: {str(e)}")
+            return False
 
     @commands.hybrid_command(name='play', description='Belirtilen YouTube videosunun sesini çalar.')
     async def play(self, ctx, *, url: str):
-        # Check if the bot is in a voice channel
+        # Initial checks and setup
         try:
+            # Check if FFmpeg is available
+            if not self.ffmpeg_path:
+                logger.error("FFmpeg not found, cannot play audio")
+                await ctx.reply("❌ FFmpeg bulunamadı. Müzik çalınamıyor.")
+                return
+                
+            # Check if the bot is in a voice channel
             if ctx.voice_client is None:
                 if ctx.author.voice:
-                    await ctx.author.voice.channel.connect()
-                    logger.info(f"Bot joined voice channel for music: {ctx.author.voice.channel.name}")
+                    try:
+                        await ctx.author.voice.channel.connect(timeout=15.0, reconnect=True)
+                        logger.info(f"Bot joined voice channel for music: {ctx.author.voice.channel.name}")
+                    except asyncio.TimeoutError:
+                        logger.error(f"Timeout connecting to voice channel")
+                        await ctx.reply("⚠️ Ses kanalına bağlanırken zaman aşımı oluştu. Lütfen tekrar deneyin.")
+                        return
+                    except Exception as e:
+                        logger.error(f"Error connecting to voice channel: {str(e)}")
+                        await ctx.reply(f"⚠️ Ses kanalına bağlanırken bir hata oluştu: {str(e)}")
+                        return
                 else:
                     logger.warning(f"Play failed: User {ctx.author} not in a voice channel")
                     await ctx.reply("Lütfen önce bir ses kanalına katılın.")
                     return
-            
-            await ctx.defer()  # Let Discord know this might take a while
+                    
+            # Let Discord know this might take a while
+            await ctx.defer()
             logger.info(f"Music playback requested by {ctx.author}: {url}")
             
-            # Get video info
+            # Get video info with retries
             info = await self._get_song_info(url, search=True)
             if info is None:
                 await ctx.reply("❌ Video bilgisi alınamadı. Lütfen başka bir video deneyin.")
@@ -279,6 +462,29 @@ class YoutubeMusic(commands.Cog):
             title = info.get('title', 'Bilinmeyen Şarkı')
             thumbnail = info.get('thumbnail')
             duration = info.get('duration', 0)  # Duration in seconds
+            
+            # Test URL accessibility
+            if not await self._check_url_accessibility(audio_url):
+                # Try alternative formats if main URL is inaccessible
+                logger.warning(f"Main audio URL is not accessible: {audio_url}")
+                
+                alt_formats = info.get('formats', [])
+                accessible_url = None
+                
+                for fmt in alt_formats:
+                    if fmt.get('acodec') != 'none' and fmt.get('url'):
+                        alt_url = fmt.get('url')
+                        if await self._check_url_accessibility(alt_url):
+                            accessible_url = alt_url
+                            logger.info(f"Found accessible alternative URL")
+                            break
+                            
+                if accessible_url:
+                    audio_url = accessible_url
+                else:
+                    logger.error("No accessible audio URL found")
+                    await ctx.reply("❌ Ses kaynağına erişilemiyor. Lütfen başka bir video deneyin.")
+                    return
             
             # Save current song info
             self.currently_playing[ctx.guild.id] = {
@@ -294,25 +500,31 @@ class YoutubeMusic(commands.Cog):
             if ctx.voice_client.is_playing():
                 ctx.voice_client.stop()
                 
-            # Set audio options
-            # Optimized for better performance
+            # Set audio options with improved settings for server environments
             FFMPEG_OPTIONS = {
-                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin',
-                'options': '-vn -b:a 64k',  # Reduced bitrate for better performance
+                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin -analyzeduration 0 -loglevel 0',
+                'options': '-vn -b:a 96k -bufsize 8192k -thread_queue_size 4096',
             }
             
-            # Play the audio
+            # Play the audio with robust error handling
             try:
-                # Use our custom FFmpegPCMAudio that relies on ffmpeg-python
+                # Create FFmpegPCMAudio source with our optimized settings
                 source = FFmpegPCMAudio(
                     audio_url,
+                    executable=self.ffmpeg_path,
                     before_options=FFMPEG_OPTIONS.get('before_options', ''),
                     options=FFMPEG_OPTIONS.get('options', '')
                 )
                 
-                # Add volume transformation with reduced volume to save resources
+                # Add volume transformation
                 source = discord.PCMVolumeTransformer(source, volume=0.5)
-                ctx.voice_client.play(source)
+                
+                # Play audio with after callback for error handling
+                def after_playing(error):
+                    if error:
+                        logger.error(f"Error after playing: {error}")
+                        
+                ctx.voice_client.play(source, after=after_playing)
                 logger.info(f"Now playing: {title}")
                 
                 # Format duration
@@ -345,300 +557,9 @@ class YoutubeMusic(commands.Cog):
             logger.error(f"YouTube download error: {str(e)}")
             await ctx.reply(f"❌ Video bulunamadı veya yüklenemedi. Lütfen başka bir şarkı deneyin.")
         except Exception as e:
-            logger.error(f"General error in play command: {str(e)}")
+            logger.error(f"General error in play command: {str(e)}\n{traceback.format_exc()}")
             print(f"❌ Play komutunda genel hata: {str(e)}")
-            await ctx.reply(f"❌ Komut işlenirken bir hata oluştu.")
-
-    @commands.hybrid_command(name='nowplaying', description='Şu an çalan şarkının bilgilerini gösterir.')
-    async def now_playing(self, ctx):
-        """Shows information about the current song"""
-        try:
-            if not ctx.voice_client or not ctx.voice_client.is_playing():
-                await ctx.reply("Şu anda çalan bir şarkı yok.")
-                return
-                
-            guild_id = ctx.guild.id
-            if guild_id not in self.currently_playing:
-                await ctx.reply("Şarkı bilgisi bulunamadı.")
-                return
-                
-            song_info = self.currently_playing[guild_id]
-            
-            # Calculate elapsed time
-            elapsed = time.time() - song_info['start_time']
-            elapsed_min, elapsed_sec = divmod(int(elapsed), 60)
-            
-            # Format total duration
-            if song_info['duration'] > 0:
-                total_min, total_sec = divmod(song_info['duration'], 60)
-                duration_str = f"{elapsed_min}:{elapsed_sec:02d}/{total_min}:{total_sec:02d}"
-            else:
-                duration_str = f"{elapsed_min}:{elapsed_sec:02d}/??:??"
-                
-            # Create embed
-            embed = discord.Embed(
-                title="🎵 Şu an çalınıyor",
-                description=f"**{song_info['title']}**",
-                color=discord.Color.blue()
-            )
-            
-            embed.add_field(name="İsteyen", value=song_info['requester'], inline=True)
-            embed.add_field(name="Süre", value=duration_str, inline=True)
-            
-            if song_info['thumbnail']:
-                embed.set_thumbnail(url=song_info['thumbnail'])
-                
-            await ctx.reply(embed=embed)
-            
-        except Exception as e:
-            logger.error(f"Error in nowplaying command: {str(e)}")
-            await ctx.reply(f"❌ Şarkı bilgisi alınırken bir hata oluştu.")
-
-    @commands.hybrid_command(name='pause', description='Çalan müziği duraklatır.')
-    async def pause(self, ctx):
-        try:
-            if ctx.voice_client and ctx.voice_client.is_playing():
-                ctx.voice_client.pause()
-                logger.info(f"Music paused by {ctx.author}")
-                await ctx.reply("⏸️ Müzik duraklatıldı.")
-            else:
-                logger.info(f"Pause command called but no music is playing")
-                await ctx.reply("Şu anda çalan bir müzik yok.")
-        except Exception as e:
-            logger.error(f"Error pausing music: {str(e)}")
-            print(f"❌ Müziği duraklatırken hata: {str(e)}")
-            await ctx.reply("Müziği duraklatırken bir hata oluştu.")
-
-    @commands.hybrid_command(name='resume', description='Duraklatılan müziği devam ettirir.')
-    async def resume(self, ctx):
-        try:
-            if ctx.voice_client and ctx.voice_client.is_paused():
-                ctx.voice_client.resume()
-                logger.info(f"Music resumed by {ctx.author}")
-                await ctx.reply("▶️ Müzik devam ediyor.")
-            else:
-                logger.info(f"Resume command called but no music is paused")
-                await ctx.reply("Duraklatılan bir müzik yok.")
-        except Exception as e:
-            logger.error(f"Error resuming music: {str(e)}")
-            print(f"❌ Müziği devam ettirirken hata: {str(e)}")
-            await ctx.reply("Müziği devam ettirirken bir hata oluştu.")
-
-    @commands.hybrid_command(name='stop', description='Çalan müziği durdurur.')
-    async def stop(self, ctx):
-        try:
-            if ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
-                # Clear current song info
-                if ctx.guild.id in self.currently_playing:
-                    del self.currently_playing[ctx.guild.id]
-                    
-                ctx.voice_client.stop()
-                logger.info(f"Music stopped by {ctx.author}")
-                await ctx.reply("⏹️ Müzik durduruldu.")
-            else:
-                logger.info(f"Stop command called but no music is playing")
-                await ctx.reply("Şu anda çalan bir müzik yok.")
-        except Exception as e:
-            logger.error(f"Error stopping music: {str(e)}")
-            print(f"❌ Müziği durdururken hata: {str(e)}")
-            await ctx.reply("Müziği durdururken bir hata oluştu.")
-
-    @commands.hybrid_command(name='ffmpeg_check', description='FFmpeg kütüphane durumunu kontrol eder')
-    async def ffmpeg_check(self, ctx):
-        """Checks if ffmpeg-python is properly installed and configured"""
-        try:
-            # Try to create a simple ffmpeg input to check if the library is working
-            try:
-                # Create a test input
-                test_input = ffmpeg.input('nullsrc', f='lavfi', t=0.1)
-                version_info = "ffmpeg-python library: Available"
-                
-                embed = discord.Embed(
-                    title="✅ FFmpeg Kütüphanesi Kontrolü Başarılı",
-                    description=f"ffmpeg-python kütüphanesi çalışıyor.\n```\n{version_info}\n```",
-                    color=discord.Color.green()
-                )
-
-                embed.add_field(
-                    name="FFmpeg Python Kütüphanesi",
-                    value=f"Sürüm: {ffmpeg.__version__ if hasattr(ffmpeg, '__version__') else 'Unknown'}",
-                    inline=False
-                )
-                
-                # Check Python version
-                embed.add_field(
-                    name="Python Sürümü",
-                    value=f"Python {sys.version.split(' ')[0]}",
-                    inline=False
-                )
-                
-                # Add info about our custom audio player
-                embed.add_field(
-                    name="Özel Ses Oynatıcı",
-                    value="FFmpegPCMAudio sınıfı ffmpeg-python kütüphanesini kullanacak şekilde özelleştirildi.",
-                    inline=False
-                )
-                
-                await ctx.reply(embed=embed)
-            except Exception as e:
-                # Library is available but there's an issue
-                await ctx.reply(f"❌ ffmpeg-python kütüphanesi yüklü ancak çalıştırılırken bir hata oluştu: {str(e)}")
-        except ImportError:
-            # Library is not available
-            await ctx.reply("❌ ffmpeg-python kütüphanesi yüklü değil. 'pip install ffmpeg-python' komutu ile yükleyin.")
-        except Exception as e:
-            logger.error(f"Error checking ffmpeg: {str(e)}")
-            print(f"❌ FFmpeg kontrol hatası: {str(e)}")
-            await ctx.reply(f"❌ FFmpeg kontrolü sırasında hata oluştu: {str(e)}")
-
-    @commands.hybrid_command(name='audio_info', description='Ses dosyası hakkında bilgi verir')
-    async def audio_info(self, ctx, url: str = None):
-        """Gets audio information using ffmpeg-python"""
-        try:
-            await ctx.defer()  # This might take some time
-            
-            # If no URL is provided, check if something is currently playing
-            if url is None:
-                if ctx.guild.id in self.currently_playing:
-                    url = self.currently_playing[ctx.guild.id]['url']
-                else:
-                    await ctx.reply("Lütfen bir ses dosyası URL'si belirtin veya önce bir şarkı çalın.")
-                    return
-            
-            # If it's not a direct audio URL, try to get it from YouTube
-            if not url.startswith(('http://', 'https://')) or 'youtube.com' in url or 'youtu.be' in url:
-                info = await self._get_song_info(url, search=True)
-                if info is None:
-                    await ctx.reply("❌ Video bilgisi alınamadı. Lütfen başka bir URL deneyin.")
-                    return
-                url = info['url']
-                title = info.get('title', 'Bilinmeyen Ses')
-            else:
-                title = "Verilen Ses Dosyası"
-                
-            # Use ffmpeg-python to analyze the audio
-            try:
-                # Create a temporary file path for downloading
-                with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_file:
-                    temp_path = temp_file.name
-                
-                # Download a small portion of the audio for analysis
-                await ctx.typing()
-                await ctx.send("🔍 Ses dosyası analiz ediliyor, lütfen bekleyin...")
-                
-                # Use ffmpeg-python to download and analyze
-                try:
-                    # Download just the first 10 seconds for analysis
-                    process = (
-                        ffmpeg
-                        .input(url, ss=0, t=10)  # Start at 0, duration 10 seconds
-                        .output(temp_path)
-                        .overwrite_output()
-                        .run_async()
-                    )
-                    
-                    # Wait for process to complete with timeout
-                    try:
-                        await asyncio.wait_for(
-                            asyncio.to_thread(process.wait), 
-                            timeout=30
-                        )
-                    except asyncio.TimeoutError:
-                        process.kill()
-                        await ctx.reply("❌ Analiz işlemi zaman aşımına uğradı.")
-                        return
-                    
-                    # Analyze the downloaded segment
-                    probe = ffmpeg.probe(temp_path)
-                    
-                    # Extract audio stream info
-                    audio_streams = [stream for stream in probe['streams'] 
-                                    if stream['codec_type'] == 'audio']
-                    
-                    if not audio_streams:
-                        await ctx.reply("❌ Bu URL'de ses akışı bulunamadı.")
-                        return
-                        
-                    # Get info from the first audio stream
-                    audio = audio_streams[0]
-                    
-                    # Create embed with audio information
-                    embed = discord.Embed(
-                        title=f"🎵 Ses Dosyası Bilgileri: {title}",
-                        color=discord.Color.blue()
-                    )
-                    
-                    # Add codec info
-                    embed.add_field(
-                        name="Codec",
-                        value=f"`{audio.get('codec_name', 'Bilinmiyor')}`",
-                        inline=True
-                    )
-                    
-                    # Add sample rate
-                    embed.add_field(
-                        name="Örnekleme Hızı",
-                        value=f"{audio.get('sample_rate', 'Bilinmiyor')} Hz",
-                        inline=True
-                    )
-                    
-                    # Add channels info
-                    channels = audio.get('channels', 0)
-                    channel_layout = audio.get('channel_layout', 
-                                             'mono' if channels == 1 else
-                                             'stereo' if channels == 2 else
-                                             f'{channels} kanal')
-                    embed.add_field(
-                        name="Kanal",
-                        value=f"{channel_layout}",
-                        inline=True
-                    )
-                    
-                    # Add bit rate if available
-                    if 'bit_rate' in audio:
-                        bit_rate = int(audio['bit_rate']) / 1000
-                        embed.add_field(
-                            name="Bit Hızı",
-                            value=f"{bit_rate:.1f} kbps",
-                            inline=True
-                        )
-                    
-                    # Add format info from probe
-                    if 'format' in probe:
-                        format_info = probe['format']
-                        if 'format_name' in format_info:
-                            embed.add_field(
-                                name="Format",
-                                value=format_info['format_name'],
-                                inline=True
-                            )
-                    
-                    await ctx.reply(embed=embed)
-                    
-                except ffmpeg.Error as e:
-                    logger.error(f"FFmpeg error: {e.stderr.decode() if hasattr(e, 'stderr') else str(e)}")
-                    await ctx.reply(f"❌ Ses analiz edilirken bir FFmpeg hatası oluştu.")
-                finally:
-                    # Clean up temp file
-                    if os.path.exists(temp_path):
-                        try:
-                            os.unlink(temp_path)
-                        except Exception:
-                            pass
-                    
-            except Exception as e:
-                logger.error(f"Error analyzing audio: {str(e)}")
-                await ctx.reply(f"❌ Ses dosyası analiz edilirken bir hata oluştu: {str(e)}")
-                
-        except Exception as e:
-            logger.error(f"General error in audio_info command: {str(e)}")
-            await ctx.reply(f"❌ Komut işlenirken bir hata oluştu.")
+            await ctx.reply(f"❌ Komut işlenirken bir hata oluştu. Detaylar için sunucu loglarını kontrol edin.")
 
 async def setup(bot):
-    try:
-        await bot.add_cog(YoutubeMusic(bot))
-        logger.info("YoutubeMusic cog loaded successfully")
-        print("✅ Youtube Music modülü yüklendi")
-    except Exception as e:
-        logger.error(f"Failed to load YoutubeMusic cog: {str(e)}\n{traceback.format_exc()}")
-        print(f"❌ Youtube Music modülü yüklenemedi: {str(e)}")
+    await bot.add_cog(YoutubeMusic(bot))
