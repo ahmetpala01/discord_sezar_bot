@@ -95,6 +95,11 @@ async def load_cogs():
         print("✅ Wordgame modülü yüklendi")
     except Exception as e:
         print(f"❌ Wordgame modülü yüklenemedi: {e}")
+    try:
+        await bot.load_extension("cogs.check_afk")
+        print("✅ CheckAFK modülü yüklendi")
+    except Exception as e:
+        print(f"❌ CheckAFK modülü yüklenemedi: {e}")
 
 async def change_status():
     # Bot bağlanana kadar bekle
