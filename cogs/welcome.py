@@ -9,7 +9,7 @@ class Welcome(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.version = "1.0.0"
-        self.support_server = "https://discord.com/oauth2/authorize?client_id=1369772830937317437"
+        self.support_server = "https://discord.com/oauth2/authorize?client_id=1372553389539328151"
         
         # Hoş geldin mesajları çeşitleri
         self.welcome_messages = [
