@@ -34,7 +34,7 @@ class AFKChecker(commands.Cog):
 
     async def handle_afk(self, member: discord.Member):
         try:
-            await asyncio.sleep(300)  # 5 dakika bekle
+            await asyncio.sleep(20)  # 5 dakika bekle
             # Hala deaf durumundaysa
             if member.voice and member.voice.self_deaf:
                 otopark_channel = await self.get_otopark_channel(member.guild)
