@@ -213,12 +213,14 @@ class YoutubeMusic(commands.Cog):
         self.temp_dir = tempfile.mkdtemp(prefix="sezar_music_")
         self.http_session = None  # Will be initialized in cog_load
         
-        # Use environment variable for FFmpeg if available
-        self.ffmpeg_path = os.environ.get('FFMPEG_PATH')
+        # Özel FFmpeg yolu - Kullanıcının kurduğu konum
+        self.ffmpeg_path = r"C:\ffmpeg-master-latest-win64-gpl-shared\bin\ffmpeg.exe"
         
-        # If not set in environment, try to find it
-        if not self.ffmpeg_path or not os.path.isfile(self.ffmpeg_path):
-            self.ffmpeg_path = self._find_ffmpeg()
+        # Eğer dosya yoksa sistem PATH'inden bulmaya çalış
+        if not os.path.isfile(self.ffmpeg_path):
+            self.ffmpeg_path = shutil.which('ffmpeg')
+            
+        print(f"FFmpeg yolu: {self.ffmpeg_path}")
         
         # Format selection - optimize for server performance
         self.optimized_format = 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio'
@@ -329,79 +331,96 @@ class YoutubeMusic(commands.Cog):
             print(f"❌ Ses kanalından ayrılırken hata: {str(e)}")
             await ctx.reply("Ses kanalından ayrılırken bir hata oluştu.")
 
-    async def _get_song_info(self, url, search=False):
-        """Get song info from YouTube in a thread to avoid blocking"""
-        if search and not url.startswith(('https://', 'http://')):
-            url = f"ytsearch:{url}"
+    async def _search_youtube(self, query):
+        """Doğrudan YouTube'da arama yapar ve ilk videoyu döndürür"""
+        print(f"DEBUG: YouTube'da arama yapılıyor: {query}")
+        
+        # YouTube'un kendi arama sayfasına benzer bir URL oluştur
+        # Bu, YouTube'un arama sonuçlarını doğrudan almak yerine
+        # "YouTube'da <arama_terimi>" araması yapıp ilk sonucu alır
+        direct_search_query = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
         
         ydl_opts = {
-            'format': self.optimized_format,
+            'format': 'bestaudio/best',
             'noplaylist': True,
             'quiet': True,
             'no_warnings': True,
+            'extract_flat': False,  # Tam video bilgisini al
             'default_search': 'auto',
             'source_address': '0.0.0.0',
-            # Server optimization options
             'geo_bypass': True,
             'nocheckcertificate': True,
-            'ignoreerrors': True,
-            'logtostderr': False,
-            'cachedir': self.temp_dir,
-            'extractor_retries': 3,
-            'retries': 5,
-            'fragment_retries': 5,
-            'skip_download': True,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
         }
         
-        loop = asyncio.get_event_loop()
-        
-        # Add retry mechanism
-        for attempt in range(3):
-            try:
+        try:
+            # İki aşamalı yaklaşım: Önce arama sonuçlarını al, sonra ilk videonun bilgilerini al
                 with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-                    # Run in executor to avoid blocking
-                    info = await loop.run_in_executor(
+                # İlk olarak arama yap ve sonuçları al
+                    print(f"DEBUG: Doğrudan YouTube arama URL'si: {direct_search_query}")
+                try:
+                    search_results = await self.bot.loop.run_in_executor(
                         self.thread_pool, 
-                        lambda: ydl.extract_info(url, download=False)
+                        lambda: ydl.extract_info(direct_search_query, download=False, process=False)
                     )
                     
-                if info is None:
-                    logger.warning(f"No info returned from YouTube-DL for {url}")
-                    if attempt < 2:
-                        await asyncio.sleep(1)
-                        continue
+                    if search_results is None or 'entries' not in search_results or not search_results['entries']:
+                        print("DEBUG: Hiç arama sonucu bulunamadı")
+                        return None
+                        
+                    # İlk videoyu al ve onun URL'sini kullan
+                    first_result = search_results['entries'][0]
+                    if 'url' not in first_result or not first_result['url'].startswith(('https://www.youtube.com', 'https://youtu.be')):
+                        print(f"DEBUG: İlk sonuçta geçerli YouTube URL'si bulunamadı: {first_result.get('url', 'URL yok')}")
                     return None
                     
-                # Handle playlists vs single videos
-                if 'entries' in info:
-                    if not info['entries']:
-                        logger.warning(f"Empty entries list returned from YouTube-DL for {url}")
-                        if attempt < 2:
-                            await asyncio.sleep(1)
-                            continue
-                        return None
-                    info = info['entries'][0]
+                    video_url = first_result['url']
+                    print(f"DEBUG: İlk video URL'si: {video_url}")
                     
-                return info
-            except youtube_dl.utils.DownloadError as e:
-                logger.error(f"YouTube-DL download error (attempt {attempt+1}/3): {str(e)}")
-                if attempt < 2:
-                    await asyncio.sleep(1.5)
-                    continue
-                return None
-            except Exception as e:
-                logger.error(f"Error getting song info (attempt {attempt+1}/3): {str(e)}")
-                if attempt < 2:
-                    await asyncio.sleep(1.5)
-                    continue
-                return None
+                    # Şimdi bu video URL'si için tam bilgileri al
+                    video_info = await self.bot.loop.run_in_executor(
+                        self.thread_pool,
+                        lambda: ydl.extract_info(video_url, download=False, process=True)
+                    )
+                    
+                    if video_info:
+                        print(f"DEBUG: Video bilgisi alındı: {video_info.get('title', 'Başlık yok')}")
+                        return video_info
+                    else:
+                        print("DEBUG: Video bilgisi alınamadı")
+                        return None
+                        
+                except Exception as e:
+                    print(f"DEBUG: YouTube arama hatası: {str(e)}")
+                    # Yedek yöntem: Direkt YouTube linki oluşturmaya çalış
+                    try:
+                        # YouTube araması için URL oluştur
+                        # Bu resmi olmayan bir yöntem ama denemeye değer
+                        ytsearch_url = f"ytsearch:{query}"
+                        print(f"DEBUG: Alternatif arama yöntemi deneniyor: {ytsearch_url}")
+                        
+                        search_results = await self.bot.loop.run_in_executor(
+                            self.thread_pool,
+                            lambda: ydl.extract_info(ytsearch_url, download=False)
+                        )
+                        
+                        if search_results and 'entries' in search_results and search_results['entries']:
+                            first_video = search_results['entries'][0]
+                            print(f"DEBUG: Alternatif yöntem ile video bulundu: {first_video.get('title', 'Başlık yok')}")
+                            return first_video
+                            
+                        print("DEBUG: Alternatif arama yöntemi de sonuç vermedi")
+                        return None
+                    except Exception as alt_e:
+                        print(f"DEBUG: Alternatif arama yöntemi de başarısız oldu: {str(alt_e)}")
+                        return None
+                    
+        except Exception as e:
+            print(f"DEBUG: Arama işlemi sırasında genel hata: {str(e)}")
+            return None
                 
-        return None  # Return None if all attempts failed
+        return None
 
-    async def _check_url_accessibility(self, url):
+    async def _check_url_accessibility(self, link):
         """Check if a URL is accessible"""
         if not self.http_session:
             self.http_session = aiohttp.ClientSession(
@@ -410,23 +429,358 @@ class YoutubeMusic(commands.Cog):
             )
             
         try:
-            async with self.http_session.head(url, timeout=5) as response:
+            async with self.http_session.head(link, timeout=5) as response:
                 return response.status < 400
         except (ClientConnectorError, asyncio.TimeoutError, aiohttp.ClientError) as e:
-            logger.warning(f"URL accessibility check failed for {url}: {str(e)}")
+            logger.warning(f"URL accessibility check failed for {link}: {str(e)}")
             return False
         except Exception as e:
             logger.error(f"Error checking URL accessibility: {str(e)}")
             return False
 
     @commands.hybrid_command(name='play', description='Belirtilen YouTube videosunun sesini çalar.')
-    async def play(self, ctx, *, url: str):
+    async def play(self, ctx, *, link: str):
+        """Orijinal play komutu"""
+        # Normal ses düzeyi ile çal (0.5 = 50%)
+        await self._play_with_volume(ctx, link, volume=0.5)
+
+    @commands.hybrid_command(
+        name='çal',
+        description='YouTube videosunun sesini çalar ve ses ayarlarını yapabilirsiniz'
+    )
+    @discord.app_commands.describe(
+        link="YouTube video linki (search parametresi ile aynı anda kullanılamaz)",
+        search="YouTubede aranacak şarkı/video adı (link parametresi ile aynı anda kullanılamaz)",
+        ses="Ses düzeyi (20-1000 arası, varsayılan: 100)",
+        bas="Bas miktarı (20-1000 arası, varsayılan: 100)",
+        tizlik="Ses tonu ayarı (0-200 arası, 0: En kalın, 100: Normal, 200: En ince)",
+        hız="Oynatma hızı (0.1-10 arası, varsayılan: 1 - normal hız)"
+    )
+    async def cal(
+        self,
+        ctx,
+        link: str = None,
+        search: str = None,
+        ses: int = 100,
+        bas: int = 100,
+        tizlik: int = 100,
+        hız: float = 1.0
+    ):
+        """
+        YouTube videosunun sesini çalar, ses, bas ve tizlik düzeyini ayarlayabilirsiniz.
+        
+        Parametreler:
+        - link: YouTube video linki (search ile aynı anda kullanılamaz)
+        - search: YouTubede aranacak şarkı/video adı (link ile aynı anda kullanılamaz)
+        - ses: Ses düzeyi (20-1000, varsayılan 100)
+        - bas: Bas miktarı (20-1000, varsayılan 100)
+        - tizlik: Ses tonu ayarı (0: En kalın, 100: Normal, 200: En ince)
+        - hız: Oynatma hızı (0.1-10, varsayılan 1 - normal hız)
+        """
+        # Debug: Hangi parametrelerin geldiğini görelim
+        print(f"DEBUG: çal komutu çağrıldı - link: {link}, search: {search}, ses: {ses}, bas: {bas}, tizlik: {tizlik}, hız: {hız}")
+        
+        # İnteraktif yanıt için kullanacağımız fonksiyon - ctx tipine göre uygun yanıt ver
+        async def send_response(message, ephemeral=False):
+            try:
+                # Slash komut için followup kullan
+                if hasattr(ctx, 'interaction') and ctx.interaction:
+                    if hasattr(ctx, 'followup'):
+                        await ctx.followup.send(message, ephemeral=ephemeral)
+                    else:
+                        await ctx.reply(message)
+                else:
+                    # Normal komut için reply kullan
+                    await ctx.reply(message)
+            except Exception as e:
+                print(f"Yanıt gönderme hatası: {e}")
+                try:
+                    await ctx.channel.send(message)
+                except:
+                    print("Kanal mesajı da gönderilemedi")
+        
+        # İnteraktif komutsa defer et
+        if hasattr(ctx, 'interaction') and ctx.interaction:
+            try:
+                await ctx.defer()
+            except Exception as e:
+                print(f"Defer hatası: {e}")
+        
+        # Link ve search parametrelerini kontrol et
+        if link is None and search is None:
+            await send_response("❌ Lütfen bir YouTube linki ya da arama terimi girin.")
+            return
+            
+        if link is not None and search is not None:
+            await send_response("❌ Aynı anda hem YouTube linki hem de arama terimi kullanamazsınız. Sadece birini belirtin.")
+            return
+            
+        # Değerleri sınırlandır
+        ses_duzeyi = max(20, min(1000, ses))
+        bas_miktari = max(20, min(1000, bas))
+        tizlik_miktari = max(0, min(200, tizlik))  # 0-200 arası sınırla
+        hiz_miktari = max(0.1, min(10.0, hız))  # 0.1-10 arası sınırla
+        
+        # Değerler sınırlandırıldıysa bildir
+        mesaj = ""
+        if ses != ses_duzeyi:
+            if ses < 20:
+                mesaj += "⚠️ Ses düzeyi çok düşük! Minimum değer olan 20'ye ayarlandı.\n"
+            else:
+                mesaj += "⚠️ Ses düzeyi çok yüksek! Maksimum değer olan 1000'e ayarlandı.\n"
+            
+        if bas != bas_miktari:
+            if bas < 20:
+                mesaj += "⚠️ Bas miktarı çok düşük! Minimum değer olan 20'ye ayarlandı.\n"
+            else:
+                mesaj += "⚠️ Bas miktarı çok yüksek! Maksimum değer olan 1000'e ayarlandı.\n"
+            
+        if tizlik != tizlik_miktari:
+            if tizlik < 0:
+                mesaj += "⚠️ Tizlik miktarı çok düşük! Minimum değer olan 0'a ayarlandı.\n"
+            else:
+                mesaj += "⚠️ Tizlik miktarı çok yüksek! Maksimum değer olan 200'e ayarlandı.\n"
+        
+        if hız != hiz_miktari:
+            if hız < 0.1:
+                mesaj += "⚠️ Hız çok düşük! Minimum değer olan 0.1'e ayarlandı.\n"
+            else:
+                mesaj += "⚠️ Hız çok yüksek! Maksimum değer olan 10.0'a ayarlandı.\n"
+        
+        # Tizlik bilgisi ekle
+        if tizlik_miktari < 100:
+            kalinlik_yuzdesi = 100 - tizlik_miktari
+            mesaj += f"🔊 Ses tonu: Kalın ses (-%{kalinlik_yuzdesi})\n"
+        elif tizlik_miktari > 100:
+            incelik_yuzdesi = tizlik_miktari - 100
+            mesaj += f"🔊 Ses tonu: İnce ses (+%{incelik_yuzdesi})\n"
+        else:
+            mesaj += "🔊 Ses tonu: Normal\n"
+        
+        # Hız bilgisi ekle
+        if hiz_miktari != 1.0:
+            if hiz_miktari < 1.0:
+                yavaslama_yuzdesi = round((1.0 - hiz_miktari) * 100)
+                mesaj += f"⏱️ Oynatma hızı: Yavaşlatılmış (-%{yavaslama_yuzdesi})\n"
+            else:
+                hizlandirma_yuzdesi = round((hiz_miktari - 1.0) * 100)
+                mesaj += f"⏱️ Oynatma hızı: Hızlandırılmış (+%{hizlandirma_yuzdesi})\n"
+        else:
+            mesaj += "⏱️ Oynatma hızı: Normal\n"
+            
+        # Ses ayarları hakkında bilgi
+        mesaj += f"🔊 Ses düzeyi={ses_duzeyi}%, Bas miktarı={bas_miktari}%"
+        
+        # İlk bilgiyi Discord kanalına gönder (interaction değil, kanal)
+        if mesaj:
+            await ctx.channel.send(mesaj, delete_after=10)
+        
+        try:
+            # Ses düzeylerini Discord PCMVolumeTransformer'ın kullandığı 0-2.0 aralığına çevir
+            normalized_volume = ses_duzeyi / 100
+            
+            # Video bilgisini al
+            info = None
+            
+            if search is not None:
+                # Arama terimi verilmişse, YouTube'da ara
+                await send_response(f"🔍 **{search}** için YouTube'da arama yapılıyor...", True)
+                info = await self._search_youtube(search)
+                
+                if info is None:
+                    await send_response(f"❌ **{search}** için YouTube'da sonuç bulunamadı veya bir hata oluştu.")
+                    return
+            else:
+                # Link verilmişse
+                is_youtube_url = link.startswith(('https://www.youtube.com', 'https://youtu.be', 'http://www.youtube.com'))
+                
+                if is_youtube_url:
+                    # YouTube linki doğrudan kullan
+                    info = await self._get_song_info(link)
+                else:
+                    # YouTube linki değilse arama yap
+                    await send_response(f"🔍 **{link}** için YouTube'da arama yapılıyor...", True)
+                    info = await self._search_youtube(link)
+                
+                if info is None or info == "NOT_FOUND":
+                    if is_youtube_url:
+                        await send_response("❌ Bu video bulunamıyor veya oynatılamıyor. Lütfen başka bir video deneyin.")
+                    else:
+                        await send_response(f"❌ **{link}** için YouTube'da sonuç bulunamadı veya bir hata oluştu.")
+                    return
+            
+            # Audio URL'sini bul
+            audio_url = None
+            
+            # Önce direct_url kontrolü (özel alanımız)
+            if 'direct_url' in info:
+                audio_url = info['direct_url']
+                print("DEBUG: direct_url kullanılıyor")
+            # Sonra url kontrolü (standart alan)
+            elif 'url' in info:
+                audio_url = info['url']
+                print("DEBUG: url alanı kullanılıyor")
+            # Son olarak formatlardan URL çıkarma
+            elif 'formats' in info and info['formats']:
+                for format in info['formats']:
+                    if format.get('acodec') != 'none' and 'url' in format:
+                        audio_url = format['url']
+                        print("DEBUG: format URL'si kullanılıyor")
+                        break
+            
+            if not audio_url:
+                await send_response("❌ Video ses URL'si alınamadı.")
+                return
+            
+            print(f"DEBUG: Audio URL: {audio_url[:50]}...")
+            
+            title = info.get('title', 'Bilinmeyen Şarkı')
+            thumbnail = info.get('thumbnail')
+            duration = info.get('duration', 0)  # Duration in seconds
+            
+            # Save current song info
+            self.currently_playing[ctx.guild.id] = {
+                'title': title,
+                'url': audio_url,
+                'thumbnail': thumbnail,
+                'requester': ctx.author.name,
+                'start_time': time.time(),
+                'duration': duration,
+                'volume': normalized_volume,  # Ses düzeyini ekle
+                'speed': hiz_miktari  # Hız bilgisini ekle
+            }
+            
+            # Stop current audio if any
+            if ctx.voice_client and ctx.voice_client.is_playing():
+                ctx.voice_client.stop()
+                
+            # Set audio options with improved settings for server environments
+            base_options = '-vn'  # Sadece ses, video yok
+            extra_options = ""
+            
+            # FFmpeg için filtre oluştur
+            audio_filters = []
+            
+            # Bass değerine göre FFmpeg filtresi oluştur
+            if bas_miktari != 100:
+                # Normalize bas seviyesini 0.2 - 10 aralığına çevir (daha etkili bas efekti için)
+                bass_gain = (bas_miktari / 100) * 2  # 0.4 - 20 aralığına çevir
+                audio_filters.append(f"bass=g={bass_gain}:f=110:w=0.6")
+                print(f"DEBUG: Bas filtresi oluşturuldu: bass=g={bass_gain}:f=110:w=0.6")
+            
+            # Tizlik değerine göre FFmpeg filtresi oluştur
+            if tizlik_miktari != 100:
+                # Tizlik ayarını uygula
+                if tizlik_miktari < 100:
+                    # Kalınlaştırma modu (0-100 arası)
+                    # 100'e yaklaştıkça etki azalır, 0'a yaklaştıkça daha kalın olur
+                    kalinlik_orani = (100 - tizlik_miktari) / 100  # 0-1 arası normalizasyon
+                    
+                    # Bas artır, tiz azalt - daha güçlü efekt
+                    bass_boost = 6 + (kalinlik_orani * 14)  # 6-20 dB arasında bas artışı
+                    treble_cut = -10 * kalinlik_orani  # 0 ile -10 dB arasında tiz azaltma
+                    mid_cut = -5 * kalinlik_orani  # Orta frekansları azalt
+                    
+                    # Ekolayzer ile farklı frekans bandlarını ayarla
+                    audio_filters.append(f"equalizer=f=60:width_type=o:width=2:g={bass_boost}")  # Düşük frekansları artır
+                    audio_filters.append(f"equalizer=f=300:width_type=o:width=1:g={mid_cut}")   # Orta frekansları azalt
+                    audio_filters.append(f"equalizer=f=1000:width_type=o:width=1:g={mid_cut}")  # Orta frekansları azalt
+                    audio_filters.append(f"equalizer=f=8000:width_type=o:width=2:g={treble_cut}")  # Yüksek frekansları azalt
+                    
+                    print(f"DEBUG: Kalınlaştırma efekti uygulandı (Bass +{bass_boost}dB, Mid {mid_cut}dB, Treble {treble_cut}dB)")
+                    
+                else:
+                    # İnceleştirme modu (100-200 arası)
+                    # 100'e yaklaştıkça etki azalır, 200'e yaklaştıkça daha ince olur
+                    incelik_orani = (tizlik_miktari - 100) / 100  # 0-1 arası normalizasyon
+                    
+                    # Tiz artır, bas azalt - daha güçlü efekt
+                    treble_boost = 6 + (incelik_orani * 14)  # 6-20 dB arasında tiz artışı
+                    bass_cut = -10 * incelik_orani  # 0 ile -10 dB arasında bas azaltma
+                    mid_boost = 3 * incelik_orani  # Orta frekansları artır
+                    
+                    # Ekolayzer ile farklı frekans bandlarını ayarla
+                    audio_filters.append(f"equalizer=f=8000:width_type=o:width=2:g={treble_boost}")  # Yüksek frekansları artır
+                    audio_filters.append(f"equalizer=f=3000:width_type=o:width=1:g={mid_boost}")  # Orta-yüksek frekansları artır
+                    audio_filters.append(f"equalizer=f=1000:width_type=o:width=1:g={mid_boost}")  # Orta frekansları artır
+                    audio_filters.append(f"equalizer=f=80:width_type=o:width=2:g={bass_cut}")  # Düşük frekansları azalt
+                    
+                    print(f"DEBUG: İnceleştirme efekti uygulandı (Treble +{treble_boost}dB, Mid +{mid_boost}dB, Bass {bass_cut}dB)")
+            
+            # Hız değerine göre FFmpeg filtresi oluştur
+            if hiz_miktari != 1.0:
+                # FFmpeg'in atempo filtresi 0.5 ile 2.0 arasındaki değerleri destekler
+                # Daha geniş aralık için birden fazla atempo filtresi arka arkaya kullanılır
+                
+                target_speed = hiz_miktari
+                print(f"DEBUG: Hedef hız: {target_speed}")
+                
+                # Hız 0.5'ten küçük veya 2.0'dan büyükse birden fazla filtre uygula
+                if 0.5 <= target_speed <= 2.0:
+                    # Doğrudan tek filtre kullan
+                    audio_filters.append(f"atempo={target_speed}")
+                    print(f"DEBUG: Hız filtresi oluşturuldu: atempo={target_speed}")
+                else:
+                    # Birden fazla filtre için faktörlere ayır
+                    remaining_speed = target_speed
+                    while remaining_speed < 0.5:
+                        audio_filters.append("atempo=0.5")
+                        remaining_speed /= 0.5
+                    
+                    while remaining_speed > 2.0:
+                        audio_filters.append("atempo=2.0")
+                        remaining_speed /= 2.0
+                    
+                    # Son kalan faktörü ekle (0.5-2.0 aralığında)
+                    if 0.5 <= remaining_speed <= 2.0 and remaining_speed != 1.0:
+                        audio_filters.append(f"atempo={remaining_speed}")
+                    
+                    print(f"DEBUG: Çoklu hız filtresi oluşturuldu: {audio_filters}")
+            
+            # Filtreleri birleştir
+            if audio_filters:
+                extra_options = f'-af "{",".join(audio_filters)}"'
+                print(f"DEBUG: FFmpeg filtresi: {extra_options}")
+                
+            options = f"{base_options} {extra_options}"
+            print(f"DEBUG: FFmpeg seçenekleri: {options}")
+            
+            # Custom play with volume, bass, treble and speed
+            await self._play_with_volume(ctx, audio_url, volume=normalized_volume, extra_options=options)
+            
+            # Şarkı başlatıldı mesajı
+            speed_info = f" ({hiz_miktari}x hızında)" if hiz_miktari != 1.0 else ""
+            await send_response(f"🎵 **{title}**{speed_info} çalınıyor!", True)
+        except Exception as e:
+            print(f"Çal komutu hatası: {e}")
+            await send_response(f"❌ Müzik çalma hatası: {e}")
+
+    async def _play_with_volume(self, ctx, audio_url: str, volume: float = 0.5, extra_options: str = ""):
+        """Ses URL'sini verilen ayarlarla çalar"""
+        # Debug: Link kontrolü
+        print(f"DEBUG: _play_with_volume çağrıldı - volume: {volume}")
+        print(f"DEBUG: Ekstra FFmpeg seçenekleri: {extra_options}")
+        
         # Initial checks and setup
         try:
             # Check if FFmpeg is available
-            if not self.ffmpeg_path:
+            if not os.path.isfile(self.ffmpeg_path):
                 logger.error("FFmpeg not found, cannot play audio")
-                await ctx.reply("❌ FFmpeg bulunamadı. Müzik çalınamıyor.")
+                embed = discord.Embed(
+                    title="❌ FFmpeg Bulunamadı",
+                    description="Müzik çalabilmek için FFmpeg'e ihtiyaç vardır.",
+                    color=discord.Color.red()
+                )
+                embed.add_field(
+                    name="FFmpeg Nasıl Kurulur?", 
+                    value="1. [FFmpeg İndirme Sayfası](https://ffmpeg.org/download.html)'nı ziyaret edin\n"
+                          "2. Bilgisayarınıza uygun sürümü indirin\n"
+                          "3. `C:\\ffmpeg` klasörüne çıkarın\n"
+                          "4. PATH değişkenine ekleyin\n"
+                          "5. Botu yeniden başlatın",
+                    inline=False
+                )
+                await ctx.reply(embed=embed)
                 return
                 
             # Check if the bot is in a voice channel
@@ -448,118 +802,323 @@ class YoutubeMusic(commands.Cog):
                     await ctx.reply("Lütfen önce bir ses kanalına katılın.")
                     return
                     
-            # Let Discord know this might take a while
-            await ctx.defer()
-            logger.info(f"Music playback requested by {ctx.author}: {url}")
-            
-            # Get video info with retries
-            info = await self._get_song_info(url, search=True)
-            if info is None:
-                await ctx.reply("❌ Video bilgisi alınamadı. Lütfen başka bir video deneyin.")
-                return
-                
-            audio_url = info['url']
-            title = info.get('title', 'Bilinmeyen Şarkı')
-            thumbnail = info.get('thumbnail')
-            duration = info.get('duration', 0)  # Duration in seconds
-            
-            # Test URL accessibility
-            if not await self._check_url_accessibility(audio_url):
-                # Try alternative formats if main URL is inaccessible
-                logger.warning(f"Main audio URL is not accessible: {audio_url}")
-                
-                alt_formats = info.get('formats', [])
-                accessible_url = None
-                
-                for fmt in alt_formats:
-                    if fmt.get('acodec') != 'none' and fmt.get('url'):
-                        alt_url = fmt.get('url')
-                        if await self._check_url_accessibility(alt_url):
-                            accessible_url = alt_url
-                            logger.info(f"Found accessible alternative URL")
-                            break
-                            
-                if accessible_url:
-                    audio_url = accessible_url
-                else:
-                    logger.error("No accessible audio URL found")
-                    await ctx.reply("❌ Ses kaynağına erişilemiyor. Lütfen başka bir video deneyin.")
-                    return
-            
-            # Save current song info
-            self.currently_playing[ctx.guild.id] = {
-                'title': title,
-                'url': audio_url,
-                'thumbnail': thumbnail,
-                'requester': ctx.author.name,
-                'start_time': time.time(),
-                'duration': duration
+            # FFmpeg audio source and options
+            ffmpeg_options = {
+                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+                'options': extra_options,
             }
             
-            # Stop current audio if any
-            if ctx.voice_client.is_playing():
-                ctx.voice_client.stop()
-                
-            # Set audio options with improved settings for server environments
-            FFMPEG_OPTIONS = {
-                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin -analyzeduration 0 -loglevel 0',
-                'options': '-vn -b:a 96k -bufsize 8192k -thread_queue_size 4096',
-            }
+            print(f"DEBUG: Çalma hazırlığı: {audio_url[:50]}...")
+            print(f"DEBUG: FFmpeg yolu: {self.ffmpeg_path}")
+            print(f"DEBUG: FFmpeg seçenekleri: {ffmpeg_options}")
             
             # Play the audio with robust error handling
             try:
-                # Create FFmpegPCMAudio source with our optimized settings
-                source = FFmpegPCMAudio(
+                # Create the audio source
+                source = discord.FFmpegPCMAudio(
                     audio_url,
                     executable=self.ffmpeg_path,
-                    before_options=FFMPEG_OPTIONS.get('before_options', ''),
-                    options=FFMPEG_OPTIONS.get('options', '')
+                    before_options=ffmpeg_options['before_options'],
+                    options=ffmpeg_options['options']
                 )
+                print("DEBUG: FFmpegPCMAudio kaynağı oluşturuldu")
                 
-                # Add volume transformation
-                source = discord.PCMVolumeTransformer(source, volume=0.5)
+                # Add volume transformation with custom level
+                source = discord.PCMVolumeTransformer(source, volume=volume)
+                print(f"DEBUG: PCMVolumeTransformer uygulandı, ses: {volume}")
                 
                 # Play audio with after callback for error handling
                 def after_playing(error):
                     if error:
                         logger.error(f"Error after playing: {error}")
+                        print(f"❌ Oynatma hatası: {error}")
                         
+                print("DEBUG: Ses çalmaya başlıyor...")
                 ctx.voice_client.play(source, after=after_playing)
-                logger.info(f"Now playing: {title}")
-                
-                # Format duration
-                if duration > 0:
-                    minutes, seconds = divmod(duration, 60)
-                    duration_str = f"{minutes}:{seconds:02d}"
-                else:
-                    duration_str = "Bilinmiyor"
-                
-                # Create embed with more info
-                embed = discord.Embed(
-                    title="🎵 Şu an çalınıyor",
-                    description=f"**{title}**",
-                    color=discord.Color.green()
-                )
-                
-                embed.add_field(name="İsteyen", value=ctx.author.mention, inline=True)
-                embed.add_field(name="Süre", value=duration_str, inline=True)
-                
-                if thumbnail:
-                    embed.set_thumbnail(url=thumbnail)
-                
-                await ctx.reply(embed=embed)
+                logger.info(f"Now playing at volume {volume*100:.0f}%")
+                print(f"🎵 Şarkı başladı (Ses: {volume*100:.0f}%)")
                 
             except Exception as e:
                 logger.error(f"Error playing audio: {str(e)}")
-                await ctx.reply(f"❌ Ses çalınırken bir hata oluştu: {str(e)}")
+                print(f"❌ Kaynak çalma hatası: {str(e)}")
+                await ctx.followup.send(f"❌ Ses çalınırken bir hata oluştu: {str(e)}")
                 
-        except youtube_dl.utils.DownloadError as e:
-            logger.error(f"YouTube download error: {str(e)}")
-            await ctx.reply(f"❌ Video bulunamadı veya yüklenemedi. Lütfen başka bir şarkı deneyin.")
         except Exception as e:
             logger.error(f"General error in play command: {str(e)}\n{traceback.format_exc()}")
             print(f"❌ Play komutunda genel hata: {str(e)}")
-            await ctx.reply(f"❌ Komut işlenirken bir hata oluştu. Detaylar için sunucu loglarını kontrol edin.")
+            await ctx.followup.send(f"❌ Komut işlenirken bir hata oluştu: {str(e)}")
+
+    @commands.hybrid_command(name='testmuzik', description='Müzik çalma özelliğini test eder.')
+    async def test_music(self, ctx):
+        """Müzik sistemini test eder ve sorunları gösterir."""
+        # Test embed hazırla
+        embed = discord.Embed(
+            title="🔍 Müzik Sistemi Testi",
+            description="Müzik sisteminin durumunu kontrol ediyorum...",
+            color=discord.Color.blue()
+        )
+        test_message = await ctx.reply(embed=embed)
+        
+        # FFmpeg testi
+        ffmpeg_ok = False
+        try:
+            if os.path.isfile(self.ffmpeg_path):
+                ffmpeg_version = subprocess.check_output([self.ffmpeg_path, "-version"], stderr=subprocess.STDOUT, text=True)
+                ffmpeg_ok = "ffmpeg version" in ffmpeg_version
+                embed.add_field(
+                    name="✅ FFmpeg Kontrolü",
+                    value=f"FFmpeg bulundu! Yolu: `{self.ffmpeg_path}`"
+                )
+            else:
+                ffmpeg_ok = False
+                embed.add_field(
+                    name="❌ FFmpeg Kontrolü",
+                    value="FFmpeg bulunamadı. Lütfen FFmpeg'i kurun veya botu yeniden başlatın."
+                )
+        except Exception as e:
+            logger.error(f"FFmpeg testi hatası: {str(e)}")
+            ffmpeg_ok = False
+            embed.add_field(
+                name="❌ FFmpeg Kontrolü",
+                value="FFmpeg testi sırasında bir hata oluştu. Lütfen log dosyasını kontrol edin."
+            )
+        
+        if ffmpeg_ok:
+            embed.add_field(
+                name="✅ Müzik Sistemi",
+                value="Müzik sistemi çalışıyor ve ses çalıyor!"
+            )
+        else:
+            embed.add_field(
+                name="❌ Müzik Sistemi",
+                value="Müzik sistemi çalışmıyor veya ses çalımıyor. Lütfen sorunları gidermeye çalışın."
+            )
+        
+        await test_message.edit(embed=embed)
+
+    # Kullanıcı parametrelerini gösteren komut
+    @commands.hybrid_command(
+        name='müzikyardım',
+        description='Müzik komutlarının kullanımını gösterir.'
+    )
+    async def music_help(self, ctx):
+        """Müzik komutlarının kullanımını ve parametre aralıklarını gösterir."""
+        embed = discord.Embed(
+            title="🎵 Müzik Komutları Yardımı",
+            description="Müzik komutlarının kullanımı ve desteklenen parametre aralıkları:",
+            color=discord.Color.blue()
+        )
+        
+        # Çal komutu için bilgiler
+        embed.add_field(
+            name="/çal",
+            value="YouTube'dan müzik çalar, ses düzeyi, bas ve tizlik ayarlanabilir.",
+            inline=False
+        )
+        
+        # Parametreler tablosu
+        embed.add_field(
+            name="Parametreler",
+            value="```\nlink:   YouTube video linki (search ile birlikte kullanılamaz)\nsearch: Aranacak şarkı/video adı (link ile birlikte kullanılamaz)\nses:    20-1000 arası değer (varsayılan: 100)\nbas:    20-1000 arası değer (varsayılan: 100)\ntizlik:  0-200 arası değer (varsayılan: 100)\n        0: En kalın ses, 100: Normal, 200: En ince ses\nhız:     0.1-10 arası değer (varsayılan: 1 - normal hız)\n```",
+            inline=False
+        )
+        
+        # Kullanım örnekleri
+        embed.add_field(
+            name="Kullanım Örnekleri",
+            value="```\n/çal link:https://www.youtube.com/watch?v=dQw4w9WgXcQ\n/çal search:Duman Seni Duman Etti\n/çal link:https://www.youtube.com/watch?v=dQw4w9WgXcQ ses:150 bas:200 tizlik:150 hız:1.5\n/çal search:Barış Manço Dağlar Dağlar tizlik:150 bas:120 hız:1.2\n```",
+            inline=False
+        )
+        
+        # Önerilen ayarlar
+        embed.add_field(
+            name="Önerilen Ayarlar",
+            value="Normal ses: ses=100, bas=100, tizlik=100, hız=1.0\n"
+                  "Çok kalın ses: ses=100, bas=150, tizlik=0, hız=0.5\n"
+                  "Orta kalınlıkta: ses=100, bas=120, tizlik=50, hız=1.0\n"
+                  "Orta incelikte: ses=100, bas=80, tizlik=150, hız=1.5\n"
+                  "Çok ince ses: ses=100, bas=60, tizlik=200, hız=2.0\n"
+                  "Bas ağırlıklı: ses=100, bas=300, tizlik=80, hız=1.0\n"
+                  "Parti modu: ses=150, bas=200, tizlik=120, hız=1.2",
+            inline=False
+        )
+        
+        # Uyarılar
+        embed.add_field(
+            name="⚠️ Uyarılar",
+            value="Çok yüksek ses değerleri (800-1000) ses kalitesinde bozulmaya neden olabilir.\n"
+                  "Çok düşük (0) veya çok yüksek (200) tizlik değerleri bazı şarkılarda doğal olmayan sesler oluşturabilir.\n"
+                  "En iyi sonuç için dengeli değerler kullanmanızı öneririz.",
+            inline=False
+        )
+        
+        await ctx.reply(embed=embed)
+
+    @commands.hybrid_command(
+        name='ez',
+        description='Ses kanalındaki herkese özel bildirim gönderir.'
+    )
+    async def ez_command(self, ctx):
+        """Ses kanalındaki tüm kullanıcılara bildirim gönderir."""
+        # Komutu kullanan kişi ses kanalında mı kontrol et
+        if not ctx.author.voice:
+            await ctx.reply("❌ Bu komutu kullanmak için bir ses kanalında olmalısınız.")
+            return
+            
+        # Kullanıcının bulunduğu ses kanalı
+        voice_channel = ctx.author.voice.channel
+        
+        # Ses kanalındaki üye sayısı
+        member_count = len(voice_channel.members)
+        
+        if member_count <= 1:
+            await ctx.reply("⚠️ Ses kanalında sizden başka kimse yok.")
+            return
+        
+        # Yeni bildirim mesajı (sesli okunacak)
+        message = "🍈 Kafasını ezmek istiyorum. Sen istemiyor musun?"
+        
+        # Orijinal mesajı sil (yollayan gözükmesin diye)
+        try:
+            await ctx.message.delete()
+        except:
+            pass
+            
+        # Bildirim gönderildi bilgisi (sadece komutu çalıştıran kişiye özel mesaj olarak)
+        try:
+            await ctx.author.send(f"✅ Ses kanalındaki {member_count-1} kişiye bildirim gönderildi.")
+        except:
+            # DM kapalıysa kanala mesaj gönder ve hemen sil
+            temp_msg = await ctx.channel.send(f"✅ Ses kanalındaki {member_count-1} kişiye bildirim gönderildi.")
+            await asyncio.sleep(3)
+            await temp_msg.delete()
+        
+        # DM Gönderme - Basitleştirilmiş mesaj
+        # Ses kanalındaki her üyeye DM göndermeye çalış
+        success_count = 0
+        for member in voice_channel.members:
+            # Kendine mesaj gönderme
+            if member.id == ctx.author.id:
+                continue
+                
+            try:
+                # Basit davetiye mesajı
+                simple_message = "Sende kavunun kafasını ezmek istiyorsan AhmetStudios'a katıl."
+                
+                # DM gönder
+                await member.send(f"🍈 {simple_message}")
+                success_count += 1
+            except Exception as e:
+                logger.error(f"DM gönderme hatası ({member.display_name}): {e}")
+        
+        # Başarılı DM gönderimini raporla (sildirilecek)
+        if success_count > 0 and ctx.guild:
+            temp_msg = await ctx.channel.send(f"✅ {success_count} kişiye özel mesaj gönderildi.", delete_after=5)
+        
+        # TTS ile Sesli Mesaj (etiketleme olmadan)
+        try:
+            # Sesli mesaj sadece kanalda gösterilecek
+            tts_msg = await ctx.channel.send(message, tts=True)
+            # 10 saniye sonra mesajı sil
+            await asyncio.sleep(10)
+            await tts_msg.delete()
+        except Exception as e:
+            logger.error(f"TTS gönderme hatası: {e}")
+        
+        # YouTube linkini otomatik çalma
+        try:
+            # YouTube linkini verilen parametrelerle çal
+            # Async fonksiyon olduğu için context içinde çağrılması gerekiyor
+            ctx.invoked_with = "çal"  # Komutu çal olarak tanımla
+            ctx.command = self.bot.get_command("çal")  # çal komutunu al
+            
+            if ctx.command:
+                # Çal komutunu yeni parameterlerle çağır
+                await self.cal(
+                    ctx, 
+                    link="https://www.youtube.com/watch?v=VSi_-r3OuuE",
+                    search=None,
+                    ses=1000,
+                    bas=300,
+                    tizlik=200,
+                    hız=1.5
+                )
+            else:
+                logger.error("Çal komutu bulunamadı")
+        except Exception as e:
+            logger.error(f"Otomatik çalma hatası: {e}")
+            print(f"Otomatik çalma hatası: {e}")
+
+    async def _get_song_info(self, link, search=False):
+        """Get song info from YouTube in a thread to avoid blocking"""
+        print(f"DEBUG: Video bilgisi alınıyor: {link}")
+        
+        # YouTube linki kontrolü
+        if not link.startswith(('https://www.youtube.com', 'https://youtu.be', 'http://www.youtube.com')):
+            print(f"DEBUG: URL bir YouTube linki değil, arama yapılmayacak: {link}")
+            return None
+        
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+            'default_search': 'auto',
+            'source_address': '0.0.0.0',
+            'geo_bypass': True,
+            'nocheckcertificate': True,
+            'ignoreerrors': False,
+            'logtostderr': True,
+            'cachedir': False,
+            'verbose': True,
+        }
+        
+        loop = asyncio.get_event_loop()
+        
+        # Add retry mechanism
+        for attempt in range(3):
+            try:
+                print(f"DEBUG: YT-DLP Deneme {attempt+1}/3")
+                with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+                    # Run in executor to avoid blocking
+                    info = await loop.run_in_executor(
+                        self.thread_pool, 
+                        lambda: ydl.extract_info(link, download=False)
+                    )
+                    
+                if info is None:
+                    print(f"DEBUG: YT-DLP boş bilgi döndürdü")
+                    logger.warning(f"No info returned from YouTube-DL for {link}")
+                    if attempt < 2:
+                        await asyncio.sleep(1)
+                        continue
+                    return None
+                
+                print(f"DEBUG: Video bilgisi alındı: {info.get('title', 'Başlık yok')}")
+                return info
+                
+            except youtube_dl.utils.DownloadError as e:
+                logger.error(f"YouTube-DL download error (attempt {attempt+1}/3): {str(e)}")
+                print(f"DEBUG: YT-DLP indirme hatası: {str(e)}")
+                
+                # Check for "Video unavailable" or "no video results"
+                if "Video unavailable" in str(e) or "no video results" in str(e) or "No video results" in str(e):
+                    print(f"DEBUG: Video bulunamadı veya kullanılamıyor")
+                    return "NOT_FOUND"
+                    
+                if attempt < 2:
+                    await asyncio.sleep(1.5)
+                    continue
+                return None
+            except Exception as e:
+                logger.error(f"Error getting song info (attempt {attempt+1}/3): {str(e)}")
+                print(f"DEBUG: Genel hata: {str(e)}")
+                if attempt < 2:
+                    await asyncio.sleep(1.5)
+                    continue
+                return None
+                
+        return None  # Return None if all attempts failed
 
 async def setup(bot):
     await bot.add_cog(YoutubeMusic(bot))
