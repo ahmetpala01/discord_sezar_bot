@@ -115,7 +115,7 @@ Sezar Bot regularly changes its status to highlight different features:
 
 ## 🔗 Invite
 
-[Click here](https://discord.com/oauth2/authorize?client_id=1369772830937317437) to add Sezar Bot to your server!
+[Click here](https://discord.com/oauth2/authorize?client_id=1372553389539328151) to add Sezar Bot to your server!
 
 ## 🤝 Contributing
 

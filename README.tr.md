@@ -113,9 +113,9 @@ Sezar Bot, durumunu düzenli olarak değiştirerek farklı özelliklerini vurgul
 - 👀 "Sorularınızı | /sorusor" izliyor
 - 🏆 "En hızlı bot | /speedtest" yarışıyor
 
-## 🔗 Davet Et
+## 🔗 Davet
 
-[Buraya tıklayarak](https://discord.com/oauth2/authorize?client_id=1369772830937317437) Sezar Bot'u sunucunuza ekleyin!
+[Buraya tıklayarak](https://discord.com/oauth2/authorize?client_id=1372553389539328151) Sezar Bot'u sunucunuza ekleyin!
 
 ## 🤝 Katkıda Bulunma
 
