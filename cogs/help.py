@@ -10,9 +10,9 @@ class Help(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.version = "1.0.0"  # Bot versiyonu
-        self.github_repo = "https://github.com/ibrahimsezer/discord_sezar_bot"  # GitHub repo adresiniz
-        self.support_invite = "https://discord.com/oauth2/authorize?client_id=1369772830937317437"  # Destek sunucusu davet bağlantınız
-        self.bot_invite = f"https://discord.com/oauth2/authorize?client_id=1369772830937317437"
+        self.github_repo = "https://github.com/ahmetpala01/discord_sezar_bot"  # GitHub repo adresiniz
+        self.support_invite = "https://discord.com/oauth2/authorize?client_id=1372553389539328151"  # Destek sunucusu davet bağlantınız
+        self.bot_invite = f"https://discord.com/oauth2/authorize?client_id=1372553389539328151"
     
     @commands.hybrid_command(name="help", description="Tüm komutları gösterir")
     async def help_command(self, ctx, *, command: str = None):
